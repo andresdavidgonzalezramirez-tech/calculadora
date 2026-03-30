@@ -1,25 +1,27 @@
+const INITIAL_FILTERS = {
+  country: "",
+  league: "",
+  team: "",
+  market: "",
+  family: "",
+  search: "",
+  oddsMin: null,
+  oddsMax: null,
+  evMin: null,
+  evMax: null,
+  edgeMin: null,
+  edgeMax: null,
+  quick: { only_ev: false, only_value: false, only_strong: false, secondary: false, next_matches: false, signal_heavy: false },
+};
+
 const state = {
   matches: [],
   opportunities: [],
   matchRadar: [],
   byFamily: {},
   countryTree: [],
-  filters: {
-    country: "",
-    league: "",
-    team: "",
-    market: "",
-    family: "",
-    search: "",
-    oddsMin: null,
-    oddsMax: null,
-    evMin: null,
-    evMax: null,
-    edgeMin: null,
-    edgeMax: null,
-    quick: { only_ev: false, only_value: false, only_strong: false, secondary: false, next_matches: false, signal_heavy: false },
-  },
   summary: {},
+  filters: structuredClone(INITIAL_FILTERS),
 };
 
 const KPI_CONFIG = [
@@ -32,6 +34,16 @@ const KPI_CONFIG = [
   ["totalStrong", "Apuestas fuertes"],
   ["totalValue", "Value bets"],
 ];
+
+const FAMILY_LABELS = {
+  "1x2": "1X2",
+  goals: "Goals",
+  btts: "BTTS",
+  corners: "Corners",
+  cards: "Cards",
+  shots: "Shots",
+  secondary: "Secondary",
+};
 
 const q = (id) => document.getElementById(id);
 const toNumber = (v) => (v === null || v === undefined || v === "" ? null : Number.isFinite(Number(v)) ? Number(v) : null);
@@ -50,9 +62,10 @@ function normalizeOpportunity(raw) {
   const flags = raw.flags || {};
   return {
     ...raw,
-    code: raw.code || "N/D",
+    fixture_id: raw.fixture_id ?? raw.fixtureId ?? null,
+    code: raw.code || raw.market_code || "N/D",
     family: raw.family || "secondary",
-    market: raw.market || raw.code || "N/D",
+    market: raw.market || raw.market_name || raw.code || "N/D",
     pick: raw.pick || raw.jugada || "N/D",
     odds: toNumber(raw.odds),
     model_prob: toNumber(raw.model_prob),
@@ -63,12 +76,15 @@ function normalizeOpportunity(raw) {
     rank: toNumber(raw.rank),
     score: toNumber(raw.score),
     stake: toNumber(raw.stake),
+    source: raw.source || "N/D",
+    reason_inclusion: raw.reason_inclusion || "N/D",
+    reason_discard: raw.reason_discard || null,
     flags: {
       ev_plus: Boolean(flags.ev_plus ?? (toNumber(raw.ev) !== null && toNumber(raw.ev) > 0)),
       value: Boolean(flags.value),
       no_value: Boolean(flags.no_value),
       strong_signal: Boolean(flags.strong_signal),
-      secondary_market: Boolean(flags.secondary_market),
+      secondary_market: Boolean(flags.secondary_market ?? ["corners", "cards", "shots", "secondary"].includes(raw.family)),
     },
   };
 }
@@ -103,33 +119,64 @@ function renderOpportunityList(containerId, opportunities, emptyText) {
   opportunities.forEach((o) => container.appendChild(createOpportunityCard(o)));
 }
 
-function applyFilters(opps) {
+function applyFilters(opps, options = {}) {
+  const cfg = {
+    respectFamily: true,
+    relaxNumeric: false,
+    relaxQuick: false,
+    ...options,
+  };
+
   return opps.filter((o) => {
     if (state.filters.country && o.pais !== state.filters.country) return false;
     if (state.filters.league && o.liga !== state.filters.league) return false;
     if (state.filters.team && !(o.partido || "").includes(state.filters.team)) return false;
     if (state.filters.market && o.market !== state.filters.market && o.code !== state.filters.market) return false;
-    if (state.filters.family && o.family !== state.filters.family) return false;
+    if (cfg.respectFamily && state.filters.family && o.family !== state.filters.family) return false;
     if (state.filters.search) {
       const hay = `${o.partido} ${o.market} ${o.pick} ${o.code} ${o.pais} ${o.liga} ${o.family}`.toLowerCase();
       if (!hay.includes(state.filters.search.toLowerCase())) return false;
     }
-    if (state.filters.oddsMin !== null && (o.odds === null || o.odds < state.filters.oddsMin)) return false;
-    if (state.filters.oddsMax !== null && (o.odds === null || o.odds > state.filters.oddsMax)) return false;
-    if (state.filters.evMin !== null && (o.ev === null || o.ev < state.filters.evMin)) return false;
-    if (state.filters.evMax !== null && (o.ev === null || o.ev > state.filters.evMax)) return false;
-    if (state.filters.edgeMin !== null && (o.edge === null || o.edge * 100 < state.filters.edgeMin)) return false;
-    if (state.filters.edgeMax !== null && (o.edge === null || o.edge * 100 > state.filters.edgeMax)) return false;
 
-    const quick = state.filters.quick;
-    if (quick.only_ev && !o.flags.ev_plus) return false;
-    if (quick.only_value && !o.flags.value) return false;
-    if (quick.only_strong && !o.flags.strong_signal) return false;
-    if (quick.secondary && !o.flags.secondary_market) return false;
-    if (quick.next_matches && !isFuture(o.hora)) return false;
-    if (quick.signal_heavy && (toNumber(o.rank) === null || toNumber(o.rank) < 2)) return false;
+    if (!cfg.relaxNumeric) {
+      if (state.filters.oddsMin !== null && (o.odds === null || o.odds < state.filters.oddsMin)) return false;
+      if (state.filters.oddsMax !== null && (o.odds === null || o.odds > state.filters.oddsMax)) return false;
+      if (state.filters.evMin !== null && (o.ev === null || o.ev < state.filters.evMin)) return false;
+      if (state.filters.evMax !== null && (o.ev === null || o.ev > state.filters.evMax)) return false;
+      if (state.filters.edgeMin !== null && (o.edge === null || o.edge * 100 < state.filters.edgeMin)) return false;
+      if (state.filters.edgeMax !== null && (o.edge === null || o.edge * 100 > state.filters.edgeMax)) return false;
+    }
+
+    if (!cfg.relaxQuick) {
+      const quick = state.filters.quick;
+      if (quick.only_ev && !o.flags.ev_plus) return false;
+      if (quick.only_value && !o.flags.value) return false;
+      if (quick.only_strong && !o.flags.strong_signal) return false;
+      if (quick.secondary && !o.flags.secondary_market) return false;
+      if (quick.next_matches && !isFuture(o.hora)) return false;
+      if (quick.signal_heavy && (toNumber(o.rank) === null || toNumber(o.rank) < 2)) return false;
+    }
+
     return true;
   }).sort((a, b) => (b.ev ?? -999) - (a.ev ?? -999) || (b.rank ?? b.score ?? -999) - (a.rank ?? a.score ?? -999) || (b.edge ?? -999) - (a.edge ?? -999));
+}
+
+function selectSectionWithFallback(primaryRows, fallbackRows, relaxedRows, opts = {}) {
+  if (primaryRows.length) return { rows: primaryRows, notice: null };
+  if (fallbackRows.length) return { rows: fallbackRows, notice: opts.familyNotice || "No hay resultados para esta familia con los filtros activos. Mostrando oportunidades generales." };
+  if (relaxedRows.length) return { rows: relaxedRows, notice: "Filtros demasiado restrictivos. Se relajaron EV/edge/quick para evitar panel vacío." };
+  return { rows: [], notice: opts.emptyNotice || null };
+}
+
+function renderFilterNotices(messages) {
+  const container = q("filter-notices");
+  if (!container) return;
+  const uniq = Array.from(new Set(messages.filter(Boolean)));
+  if (!uniq.length) {
+    container.innerHTML = "";
+    return;
+  }
+  container.innerHTML = uniq.map((m) => `<p class="filter-notice">${m}</p>`).join("");
 }
 
 function renderKpis(summary) {
@@ -198,6 +245,98 @@ function renderMatchRadar(radarRows) {
   });
 }
 
+function flattenTelemetry(payload) {
+  const telemetry = payload.market_telemetry || payload.telemetria_mercados || {};
+  const rows = [];
+  Object.entries(telemetry || {}).forEach(([fixtureId, marketMap]) => {
+    Object.values(marketMap || {}).forEach((row) => rows.push(normalizeOpportunity({ ...row, fixture_id: Number(fixtureId), source: row.source || "market_telemetry" })));
+  });
+  return rows;
+}
+
+function withFixtureContext(opps, matchMap) {
+  return opps.map((opp) => {
+    if (opp.partido && opp.pais && opp.liga) return opp;
+    const m = matchMap.get(Number(opp.fixture_id));
+    if (!m) return opp;
+    return {
+      ...opp,
+      pais: opp.pais || m.pais,
+      liga: opp.liga || m.liga,
+      partido: opp.partido || `${m.local || "Local"} vs ${m.visitante || "Visitante"}`,
+      hora: opp.hora || m.hora,
+    };
+  });
+}
+
+function dedupeOpportunities(opps) {
+  const map = new Map();
+  opps.forEach((opp) => {
+    const key = `${opp.fixture_id || "na"}:${opp.code}:${opp.pick || "na"}`;
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, opp);
+      return;
+    }
+    const prevScore = (prev.ev ?? -999) + (prev.flags?.value ? 0.2 : 0) + (prev.flags?.strong_signal ? 0.2 : 0);
+    const currScore = (opp.ev ?? -999) + (opp.flags?.value ? 0.2 : 0) + (opp.flags?.strong_signal ? 0.2 : 0);
+    if (currScore >= prevScore) map.set(key, opp);
+  });
+  return Array.from(map.values());
+}
+
+function buildUnifiedOpportunities(payload) {
+  const matchMap = new Map((payload.partidos || []).map((m) => [Number(m.fixture_id), m]));
+  const prioritized = [
+    ...(payload.oportunidades_ev || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "oportunidades_ev" })),
+    ...(payload.top_opportunities || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "top_opportunities" })),
+    ...flattenTelemetry(payload),
+    ...((payload.apuestas_fuertes || []).map((s) => normalizeOpportunity({
+      code: s.code || s.mercado_codigo || s.mercado || "SIGNAL",
+      market: s.mercado || "Apuesta fuerte",
+      pick: s.jugada || "N/D",
+      family: s.family || "secondary",
+      odds: s.cuota,
+      model_prob: s.probabilidad != null ? Number(s.probabilidad) / 100 : null,
+      edge: s.edge != null ? Number(s.edge) / 100 : null,
+      ev: null,
+      flags: { ev_plus: false, value: Boolean(s.value), strong_signal: true, secondary_market: true },
+      source: "apuestas_fuertes",
+      reason_inclusion: "apuestas_fuertes",
+    }))),
+  ];
+
+  return dedupeOpportunities(withFixtureContext(prioritized, matchMap));
+}
+
+function getFamilyDataset(family, strictDataset, baseDataset) {
+  const strictFamily = strictDataset.filter((o) => o.family === family);
+  if (strictFamily.length) return { rows: strictFamily.slice(0, 40), notice: null };
+
+  const byFamilyRows = (state.byFamily[family] || []).map(normalizeOpportunity);
+  const familyWithContext = withFixtureContext(byFamilyRows, new Map(state.matches.map((m) => [Number(m.fixture_id), m])));
+  const filteredByFamily = applyFilters(familyWithContext, { respectFamily: false });
+  if (filteredByFamily.length) {
+    return {
+      rows: filteredByFamily.slice(0, 40),
+      notice: `No hay ${FAMILY_LABELS[family]} EV+; mostrando mercados de ${FAMILY_LABELS[family]} evaluados por el modelo.`,
+    };
+  }
+
+  const baseFamily = baseDataset.filter((o) => o.family === family);
+  if (baseFamily.length) {
+    return {
+      rows: baseFamily.slice(0, 40),
+      notice: `No hay resultados para esta familia con los filtros activos. Mostrando ${FAMILY_LABELS[family]} generales.`,
+    };
+  }
+
+  return {
+    rows: [],
+    notice: `No hay resultados para esta familia con los filtros activos.`,
+  };
+}
+
 function bindFilters() {
   [["filter-country", "country"], ["filter-league", "league"], ["filter-team", "team"], ["filter-market", "market"], ["filter-family", "family"], ["search-input", "search"], ["odds-min", "oddsMin", true], ["odds-max", "oddsMax", true], ["ev-min", "evMin", true], ["ev-max", "evMax", true], ["edge-min", "edgeMin", true], ["edge-max", "edgeMax", true]].forEach(([id, key, n]) => {
     q(id).addEventListener("input", (e) => {
@@ -215,22 +354,65 @@ function bindFilters() {
     });
   });
 
+  q("reset-filters-btn")?.addEventListener("click", () => {
+    state.filters = structuredClone(INITIAL_FILTERS);
+    ["filter-country", "filter-league", "filter-team", "filter-market", "filter-family", "search-input", "odds-min", "odds-max", "ev-min", "ev-max", "edge-min", "edge-max"].forEach((id) => {
+      if (q(id)) q(id).value = "";
+    });
+    document.querySelectorAll(".quick-filter").forEach((btn) => btn.classList.remove("active"));
+    renderFromState();
+  });
+
   q("refresh-btn").addEventListener("click", refreshDashboard);
 }
 
 function renderFromState() {
-  const filtered = applyFilters(state.opportunities);
-  renderKpis(state.summary);
-  renderOpportunityList("top-opportunities", filtered.slice(0, 50), "No hay oportunidades top para filtros activos.");
-  renderOpportunityList("future-opportunities", filtered.filter((o) => o.flags.ev_plus && isFuture(o.hora)).slice(0, 50), "No hay EV+ próximos.");
-  renderOpportunityList("secondary-opportunities", filtered.filter((o) => o.flags.secondary_market).slice(0, 50), "No hay secundarios con valor.");
-  renderOpportunityList("family-1x2", filtered.filter((o) => o.family === "1x2").slice(0, 40), "Sin 1X2 para filtros activos.");
-  renderOpportunityList("family-goals", filtered.filter((o) => o.family === "goals").slice(0, 40), "Sin goals para filtros activos.");
-  renderOpportunityList("family-btts", filtered.filter((o) => o.family === "btts").slice(0, 40), "Sin BTTS para filtros activos.");
-  renderOpportunityList("family-corners", filtered.filter((o) => o.family === "corners").slice(0, 40), "Sin corners para filtros activos.");
-  renderOpportunityList("family-cards", filtered.filter((o) => o.family === "cards").slice(0, 40), "Sin cards para filtros activos.");
-  renderOpportunityList("family-shots", filtered.filter((o) => o.family === "shots").slice(0, 40), "Sin shots para filtros activos.");
+  const strict = applyFilters(state.opportunities, { respectFamily: true });
+  const base = applyFilters(state.opportunities, { respectFamily: false });
+  const relaxed = applyFilters(state.opportunities, { respectFamily: false, relaxNumeric: true, relaxQuick: true });
+  const notices = [];
 
+  const topSection = selectSectionWithFallback(strict, base, relaxed, {
+    familyNotice: "No hay resultados para la familia seleccionada con los filtros actuales. Mostrando oportunidades generales.",
+  });
+  if (topSection.notice) notices.push(topSection.notice);
+  renderOpportunityList("top-opportunities", topSection.rows.slice(0, 50), "No hay oportunidades top para filtros activos.");
+
+  const strictFuture = strict.filter((o) => o.flags.ev_plus && isFuture(o.hora));
+  const baseFuture = base.filter((o) => o.flags.ev_plus && isFuture(o.hora));
+  const relaxedFuture = relaxed.filter((o) => o.flags.ev_plus && isFuture(o.hora));
+  const futureSection = selectSectionWithFallback(strictFuture, baseFuture, relaxedFuture, {
+    familyNotice: "No hay EV+ próximos para esta familia. Mostrando EV+ generales.",
+  });
+  if (futureSection.notice) notices.push(futureSection.notice);
+  renderOpportunityList("future-opportunities", futureSection.rows.slice(0, 50), "No hay EV+ próximos.");
+
+  const strictSecondary = strict.filter((o) => o.flags.secondary_market || o.family === "secondary");
+  const baseSecondary = base.filter((o) => o.flags.secondary_market || o.family === "secondary");
+  const relaxedSecondary = relaxed.filter((o) => o.flags.secondary_market || o.family === "secondary");
+  const secondarySection = selectSectionWithFallback(strictSecondary, baseSecondary, relaxedSecondary, {
+    familyNotice: "No hay mercados secundarios para esta familia. Mostrando secundarios generales.",
+  });
+  if (secondarySection.notice) notices.push(secondarySection.notice);
+  renderOpportunityList("secondary-opportunities", secondarySection.rows.slice(0, 50), "No hay secundarios con valor.");
+
+  const familySections = [
+    ["1x2", "family-1x2", "Sin 1X2 para filtros activos."],
+    ["goals", "family-goals", "Sin goals para filtros activos."],
+    ["btts", "family-btts", "Sin BTTS para filtros activos."],
+    ["corners", "family-corners", "Sin corners para filtros activos."],
+    ["cards", "family-cards", "Sin cards para filtros activos."],
+    ["shots", "family-shots", "Sin shots para filtros activos."],
+  ];
+
+  familySections.forEach(([family, target, empty]) => {
+    const result = getFamilyDataset(family, strict, base);
+    if (result.notice && (!state.filters.family || state.filters.family === family)) notices.push(result.notice);
+    renderOpportunityList(target, result.rows, empty);
+  });
+
+  renderFilterNotices(notices);
+  renderKpis(state.summary);
   renderLeagueExplorer(state.countryTree);
   renderMatchRadar(state.matchRadar);
 }
@@ -275,7 +457,7 @@ async function refreshDashboard() {
   try {
     const payload = await fetchJson("/panel/dashboard?limit=3000");
     state.matches = payload.partidos || [];
-    state.opportunities = (payload.top_opportunities || []).map(normalizeOpportunity);
+    state.opportunities = buildUnifiedOpportunities(payload);
     state.matchRadar = payload.match_radar || [];
     state.byFamily = payload.top_by_family || {};
     state.countryTree = payload.paises || [];
