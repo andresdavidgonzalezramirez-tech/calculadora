@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Radar de Value Betting</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="hero">
+        <h1>Radar cuantitativo de oportunidades</h1>
+        <p id="status">Cargando datos del backend...</p>
+      </header>
+
+      <section>
+        <h2>Top oportunidades del día (EV+)</h2>
+        <div id="top-opportunities" class="opportunity-grid"></div>
+      </section>
+
+      <section>
+        <h2>Próximas oportunidades EV+</h2>
+        <div id="future-opportunities" class="opportunity-grid"></div>
+      </section>
+
+      <section>
+        <h2>Mercados secundarios con valor</h2>
+        <div id="secondary-opportunities" class="opportunity-grid"></div>
+      </section>
+
+      <section>
+        <h2>Radar por partido</h2>
+        <div id="match-radar" class="match-list"></div>
+      </section>
+    </main>
+
+    <template id="opportunity-template">
+      <article class="opportunity-card">
+        <div class="card-top">
+          <strong class="market-code"></strong>
+          <span class="market-group"></span>
+        </div>
+        <p class="play"></p>
+        <p class="meta"></p>
+        <p class="metrics"></p>
+        <p class="reason"></p>
+      </article>
+    </template>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
