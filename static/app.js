@@ -102,8 +102,8 @@ function inferFamily(raw = {}) {
 }
 
 function isCompleteOpportunity(opp) {
-  if (opp.market_complete === true) return true;
-  const required = [opp.odds, opp.model_prob, opp.implied_prob, opp.edge, opp.ev];
+  if (opp.pricing_complete === true || opp.market_complete === true) return true;
+  const required = [opp.odds, opp.model_prob, opp.implied_prob, opp.fair_prob, opp.edge, opp.ev];
   return required.every((value) => toNumber(value) !== null);
 }
 
@@ -113,6 +113,7 @@ function normalizeOpportunity(raw) {
   const odds = toNumber(raw.odds ?? raw.cuota);
   const modelProb = toNumber(raw.model_prob ?? raw.prob_modelo ?? raw.probModelo);
   const impliedProb = toNumber(raw.implied_prob ?? raw.prob_implicita ?? raw.probImplicita);
+  const fairProb = toNumber(raw.fair_prob ?? raw.prob_justa ?? raw.probJusta);
   const deltaProb = toNumber(raw.delta_prob);
   const edge = toNumber(raw.edge);
   const ev = toNumber(raw.ev);
@@ -127,6 +128,7 @@ function normalizeOpportunity(raw) {
     odds,
     model_prob: modelProb,
     implied_prob: impliedProb,
+    fair_prob: fairProb,
     delta_prob: deltaProb ?? ((modelProb !== null && impliedProb !== null) ? modelProb - impliedProb : null),
     edge,
     ev,
@@ -137,16 +139,24 @@ function normalizeOpportunity(raw) {
     reason_inclusion: raw.reason_inclusion || raw.inclusion_reason || "N/D",
     reason_discard: raw.reason_discard || raw.discard_reason || null,
     completeness_reason: raw.completeness_reason || null,
-    market_complete: raw.market_complete === true,
+    pricing_complete: raw.pricing_complete === true || raw.market_complete === true,
+    market_complete: raw.pricing_complete === true || raw.market_complete === true,
     flags: {
-      ev_plus: Boolean(flags.ev_plus ?? (ev !== null && ev > 0)),
-      value: Boolean(flags.value),
-      no_value: Boolean(flags.no_value),
-      strong_signal: Boolean(flags.strong_signal),
+      ev_plus: Boolean(flags.ev_plus ?? false),
+      value: Boolean(flags.value ?? false),
+      no_value: Boolean(flags.no_value ?? false),
+      strong_signal: Boolean(flags.strong_signal ?? false),
       secondary_market: Boolean(flags.secondary_market ?? ["corners", "cards", "shots", "secondary"].includes(family)),
     },
   };
-  normalized.market_complete = isCompleteOpportunity(normalized);
+  normalized.pricing_complete = isCompleteOpportunity(normalized);
+  normalized.market_complete = normalized.pricing_complete;
+  if (!normalized.pricing_complete) {
+    normalized.flags.ev_plus = false;
+    normalized.flags.value = false;
+    normalized.flags.no_value = false;
+    normalized.flags.strong_signal = false;
+  }
   return normalized;
 }
 
@@ -157,7 +167,7 @@ function opportunityBadges(opp) {
   if (opp.flags.no_value) out.push('<span class="badge non-value">No Value</span>');
   if (opp.flags.strong_signal) out.push('<span class="badge strong">Strong signal</span>');
   if (opp.flags.secondary_market) out.push('<span class="badge secondary">Secondary market</span>');
-  if (!opp.market_complete) out.push('<span class="badge incomplete">Sin pricing completo</span>');
+  if (!opp.pricing_complete) out.push('<span class="badge incomplete">Sin pricing completo</span>');
   return out.join(" ");
 }
 
@@ -172,11 +182,12 @@ function createOpportunityCard(opp) {
   const oddsLabel = fmtDecimal(opp.odds, 2) || "N/D";
   const modelLabel = toPercent(opp.model_prob, 1) || "N/D";
   const impliedLabel = toPercent(opp.implied_prob, 1) || "N/D";
+  const fairLabel = toPercent(opp.fair_prob, 1) || "N/D";
   const deltaLabel = toSignedPercent(opp.delta_prob, 1) || "N/D";
   const edgeLabel = toSignedPercent(opp.edge, 1) || "N/D";
   const evLabel = fmtDecimal(opp.ev, 3) || "N/D";
 
-  node.querySelector(".meta").innerHTML = `<span class="metric metric-odds">Cuota <strong>${oddsLabel}</strong></span> · Prob modelo: ${modelLabel} · Prob implícita: ${impliedLabel} · ΔProb: ${deltaLabel}`;
+  node.querySelector(".meta").innerHTML = `<span class="metric metric-odds">Cuota <strong>${oddsLabel}</strong></span> · Prob modelo: ${modelLabel} · Prob implícita: ${impliedLabel} · Prob fair: ${fairLabel} · ΔProb: ${deltaLabel}`;
   node.querySelector(".metrics").textContent = `Edge: ${edgeLabel} · EV: ${evLabel} · Rank: ${opp.rank ?? "N/D"} · Score: ${opp.score ?? "N/D"} · Stake: ${opp.stake ?? "N/D"}`;
 
   const traceNotes = [];

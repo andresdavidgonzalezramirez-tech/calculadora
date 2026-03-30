@@ -119,6 +119,7 @@ class Prediction(Base):
     over75_corners: Mapped[Optional[float]] = mapped_column(Numeric(10, 6, asdecimal=False), nullable=True)
     over85_corners: Mapped[Optional[float]] = mapped_column(Numeric(10, 6, asdecimal=False), nullable=True)
     over95_corners: Mapped[Optional[float]] = mapped_column(Numeric(10, 6, asdecimal=False), nullable=True)
+    corners_markets: Mapped[Optional[dict]] = mapped_column(JSONType, nullable=True)
 
     tarjetas_local: Mapped[Optional[float]] = mapped_column(Numeric(10, 4, asdecimal=False), nullable=True)
     tarjetas_visitante: Mapped[Optional[float]] = mapped_column(Numeric(10, 4, asdecimal=False), nullable=True)
@@ -184,6 +185,7 @@ class OddsSnapshot(Base):
     over75_corners: Mapped[Optional[float]] = mapped_column(Numeric(10, 4, asdecimal=False), nullable=True)
     over85_corners: Mapped[Optional[float]] = mapped_column(Numeric(10, 4, asdecimal=False), nullable=True)
     over95_corners: Mapped[Optional[float]] = mapped_column(Numeric(10, 4, asdecimal=False), nullable=True)
+    corners_lines: Mapped[Optional[dict]] = mapped_column(JSONType, nullable=True)
 
     over35_cards: Mapped[Optional[float]] = mapped_column(Numeric(10, 4, asdecimal=False), nullable=True)
     over45_cards: Mapped[Optional[float]] = mapped_column(Numeric(10, 4, asdecimal=False), nullable=True)
@@ -247,6 +249,7 @@ REQUIRED_PREDICTION_COLUMNS = {
     "stake_sugerido_unidades": "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS stake_sugerido_unidades NUMERIC(10,4)",
     "market_stability": "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS market_stability NUMERIC(10,4)",
     "market_reliability": "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS market_reliability NUMERIC(10,4)",
+    "corners_markets": "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS corners_markets JSONB" if not IS_SQLITE else "",
 }
 
 REQUIRED_ODDS_SNAPSHOT_COLUMNS = {
@@ -266,6 +269,7 @@ REQUIRED_ODDS_SNAPSHOT_COLUMNS = {
     "over75_corners": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS over75_corners NUMERIC(10,4)",
     "over85_corners": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS over85_corners NUMERIC(10,4)",
     "over95_corners": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS over95_corners NUMERIC(10,4)",
+    "corners_lines": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS corners_lines JSONB" if not IS_SQLITE else "",
     "over35_cards": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS over35_cards NUMERIC(10,4)",
     "over45_cards": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS over45_cards NUMERIC(10,4)",
     "shots_home": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS shots_home NUMERIC(10,4)",
