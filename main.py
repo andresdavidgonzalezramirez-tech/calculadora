@@ -660,6 +660,119 @@ def serialize_alert(a: PricingAlert) -> Dict[str, Any]:
     }
 
 
+def classify_market_family(code: Any = None, market: Any = None) -> str:
+    token = f"{code or ''} {market or ''}".upper()
+    if "CORNERS" in token:
+        return "corners"
+    if "CARDS" in token or "TARJET" in token:
+        return "cards"
+    if "SHOTS" in token or "SOT" in token or "TIROS" in token or "PUERTA" in token:
+        return "shots"
+    if "BTTS" in token or "AMBOS" in token:
+        return "btts"
+    if any(k in token for k in ["1X2", "DC", "DRAW", "LOCAL", "VISITANTE"]):
+        return "1x2"
+    if any(k in token for k in ["OVER", "UNDER", "GOALS", "GOLES", "TOTAL"]):
+        return "goals"
+    return "secondary"
+
+
+def safe_ratio(numerator: Optional[float], denominator: Optional[float]) -> Optional[float]:
+    if numerator is None or denominator is None or denominator == 0:
+        return None
+    return numerator / denominator
+
+
+def build_market_telemetry(serialized: Dict[str, Any], latest_odds: Optional[OddsSnapshot]) -> Dict[str, Dict[str, Any]]:
+    market_rows: List[Dict[str, Any]] = []
+
+    def add_market(code: str, market: str, pick: Optional[str], model_prob: Optional[float], odds: Optional[float], edge: Optional[float], ev: Optional[float], source: str, subtype: Optional[str] = None) -> None:
+        implied_prob = safe_ratio(1.0, odds) if odds and odds > 1 else None
+        delta_prob = (model_prob - implied_prob) if (model_prob is not None and implied_prob is not None) else None
+        family = classify_market_family(code, market)
+        rank = num_or_none(serialized.get("confianza"))
+        score = num_or_none(serialized.get("prob_apuesta"))
+        value = bool(serialized.get("es_value_bet")) if ev is not None else None
+        strong = bool(serialized.get("strong_count", 0) > 0) if ev is not None else None
+        market_rows.append({
+            "code": code,
+            "family": family,
+            "market": market,
+            "subtype": subtype,
+            "pick": pick,
+            "odds": num_or_none(odds, 4),
+            "model_prob": num_or_none(model_prob, 6),
+            "implied_prob": num_or_none(implied_prob, 6),
+            "delta_prob": num_or_none(delta_prob, 6),
+            "edge": num_or_none(edge, 6),
+            "ev": num_or_none(ev, 6),
+            "rank": rank,
+            "score": score,
+            "stake": num_or_none(serialized.get("stake_sugerido_unidades"), 4),
+            "source": source,
+            "reason_inclusion": "evaluado_por_modelo",
+            "reason_discard": None,
+            "flags": {
+                "ev_plus": bool(ev is not None and ev > 0),
+                "value": value,
+                "no_value": bool(value is False),
+                "strong_signal": strong,
+                "secondary_market": family in {"corners", "cards", "shots", "secondary"},
+            },
+            "data_quality": num_or_none(serialized.get("data_quality"), 4),
+        })
+
+    # Mercado principal y señales.
+    add_market(
+        str(serialized.get("mercado_principal") or "1X2_MAIN"),
+        str(serialized.get("mercado_principal") or "Mercado principal"),
+        serialized.get("apuesta_principal"),
+        num_or_none(serialized.get("prob_apuesta")),
+        num_or_none(serialized.get("cuota_principal")),
+        num_or_none(serialized.get("edge_principal")),
+        num_or_none(serialized.get("edge_principal")) if serialized.get("edge_principal") is not None else None,
+        "ev_principal",
+        subtype="principal",
+    )
+
+    for signal in normalize_signals(serialized.get("apuestas_fuertes")):
+        market_name = signal.get("mercado") or "Market signal"
+        code = str(signal.get("code") or signal.get("mercado_codigo") or market_name).upper().replace(" ", "_")
+        model_prob = safe_ratio(num_or_none(signal.get("probabilidad")), 100.0) if signal.get("probabilidad") is not None else None
+        odds = num_or_none(signal.get("cuota"))
+        edge = safe_ratio(num_or_none(signal.get("edge")), 100.0) if signal.get("edge") is not None else None
+        ev = (odds * model_prob - 1.0) if (odds is not None and model_prob is not None) else None
+        add_market(code, str(market_name), signal.get("jugada"), model_prob, odds, edge, ev, "apuestas_fuertes", subtype="signal")
+
+    if latest_odds:
+        odds_map = [
+            ("O75_CORNERS", "Over 7.5 Corners", latest_odds.over75_corners, num_or_none(serialized.get("over75_corners")), "corners"),
+            ("O85_CORNERS", "Over 8.5 Corners", latest_odds.over85_corners, num_or_none(serialized.get("over85_corners")), "corners"),
+            ("O95_CORNERS", "Over 9.5 Corners", latest_odds.over95_corners, num_or_none(serialized.get("over95_corners")), "corners"),
+            ("O35_CARDS", "Over 3.5 Cards", latest_odds.over35_cards, num_or_none(serialized.get("over35_tarjetas")), "cards"),
+            ("O45_CARDS", "Over 4.5 Cards", latest_odds.over45_cards, num_or_none(serialized.get("over45_tarjetas")), "cards"),
+            ("SHOTS_HOME", "Shots Home", latest_odds.shots_home, None, "shots"),
+            ("SHOTS_AWAY", "Shots Away", latest_odds.shots_away, None, "shots"),
+            ("SOT_HOME", "Shots on target Home", latest_odds.sot_home, None, "shots"),
+            ("SOT_AWAY", "Shots on target Away", latest_odds.sot_away, None, "shots"),
+        ]
+        for code, market, odds, model_prob, subtype in odds_map:
+            implied = safe_ratio(1.0, odds) if odds and odds > 1 else None
+            ev = (odds * model_prob - 1.0) if (odds is not None and model_prob is not None) else None
+            add_market(code, market, "OVER", model_prob, num_or_none(odds), None, ev, "odds_snapshot", subtype=subtype)
+
+    telemetry: Dict[str, Dict[str, Any]] = {}
+    for row in market_rows:
+        key = row["code"]
+        if key not in telemetry:
+            telemetry[key] = row
+        else:
+            prev = telemetry[key]
+            if prev.get("ev") is None and row.get("ev") is not None:
+                telemetry[key] = row
+    return telemetry
+
+
 def backfill_prediction_signals(db: Session) -> int:
     stmt = select(Prediction).where((Prediction.apuestas_fuertes.is_(None)) | (Prediction.apuestas_fuertes == []))
     rows = db.execute(stmt).scalars().all()
@@ -834,6 +947,130 @@ def get_predictions(
     return {"predictions": [serialize_prediction(r) for r in rows]}
 
 
+def sorted_opportunities(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(
+        rows,
+        key=lambda x: (
+            x.get("ev") if x.get("ev") is not None else -999,
+            x.get("rank") if x.get("rank") is not None else (x.get("score") if x.get("score") is not None else -999),
+            x.get("edge") if x.get("edge") is not None else -999,
+        ),
+        reverse=True,
+    )
+
+
+def build_dashboard_payload(rows: List[Prediction], db: Session) -> Dict[str, Any]:
+    serialized_rows = [serialize_prediction(r) for r in rows]
+    fixture_ids = [int(r.get("fixture_id")) for r in serialized_rows if r.get("fixture_id")]
+    odds_rows = db.execute(select(OddsSnapshot).where(OddsSnapshot.fixture_id.in_(fixture_ids))).scalars().all() if fixture_ids else []
+    latest_odds_by_fixture: Dict[int, OddsSnapshot] = {}
+    for odds in odds_rows:
+        prev = latest_odds_by_fixture.get(int(odds.fixture_id))
+        if prev is None or ((odds.snapshot_at or utcnow()) > (prev.snapshot_at or utcnow())):
+            latest_odds_by_fixture[int(odds.fixture_id)] = odds
+
+    all_opportunities: List[Dict[str, Any]] = []
+    match_radar: List[Dict[str, Any]] = []
+    countries_map: Dict[str, Dict[str, Any]] = {}
+    family_totals = {k: 0 for k in ["1x2", "goals", "btts", "corners", "cards", "shots", "secondary"]}
+
+    for row in serialized_rows:
+        fixture_id = int(row["fixture_id"])
+        telemetry = build_market_telemetry(row, latest_odds_by_fixture.get(fixture_id))
+        opps = sorted_opportunities(list(telemetry.values()))
+        for opp in opps:
+            opp["fixture_id"] = fixture_id
+            opp["pais"] = row.get("pais")
+            opp["liga"] = row.get("liga")
+            opp["partido"] = f"{row.get('local') or 'Local'} vs {row.get('visitante') or 'Visitante'}"
+            opp["hora"] = row.get("hora")
+            family_totals[opp["family"]] = family_totals.get(opp["family"], 0) + 1
+        all_opportunities.extend(opps)
+
+        included = [o for o in opps if o.get("flags", {}).get("ev_plus") or o.get("flags", {}).get("value") or o.get("flags", {}).get("strong_signal")]
+        excluded = [o for o in opps if o not in included]
+        for item in excluded:
+            item["reason_discard"] = item.get("reason_discard") or "No entra al top global pero se conserva para trazabilidad"
+
+        match_radar.append({
+            "fixture_id": fixture_id,
+            "pais": row.get("pais"),
+            "liga": row.get("liga"),
+            "hora": row.get("hora"),
+            "equipos": {"local": row.get("local"), "visitante": row.get("visitante")},
+            "familias_detectadas": sorted({o["family"] for o in opps}),
+            "value_flag": any(o.get("flags", {}).get("value") for o in opps),
+            "mercados_calculados": opps,
+            "oportunidades_incluidas": included,
+            "oportunidades_excluidas": excluded,
+            "top_opportunities": opps[:8],
+            "oportunidades_ev": [o for o in opps if o.get("ev") is not None and o.get("ev", 0) > 0],
+            "ev_principal": num_or_none(row.get("edge_principal")) if row.get("edge_principal") is not None else None,
+            "market_telemetry": telemetry,
+            "telemetria_mercados": telemetry,
+            "apuestas_fuertes": row.get("apuestas_fuertes") or [],
+            "data_quality": row.get("data_quality"),
+            "source_match": row,
+        })
+
+        country = row.get("pais") or "N/D"
+        league = row.get("liga") or "N/D"
+        bucket = countries_map.setdefault(country, {"pais": country, "ligas": {}, "partidos": 0, "ev_plus": 0, "value_bets": 0})
+        bucket["partidos"] += 1
+        league_bucket = bucket["ligas"].setdefault(league, {"liga": league, "partidos": 0, "ev_plus": 0, "value_bets": 0})
+        league_bucket["partidos"] += 1
+        ev_plus = sum(1 for o in opps if o.get("flags", {}).get("ev_plus"))
+        value = sum(1 for o in opps if o.get("flags", {}).get("value"))
+        bucket["ev_plus"] += ev_plus
+        bucket["value_bets"] += value
+        league_bucket["ev_plus"] += ev_plus
+        league_bucket["value_bets"] += value
+
+    ordered = sorted_opportunities(all_opportunities)
+    top_by_family: Dict[str, List[Dict[str, Any]]] = {}
+    for fam in ["1x2", "goals", "btts", "corners", "cards", "shots", "secondary"]:
+        top_by_family[fam] = sorted_opportunities([o for o in ordered if o.get("family") == fam])[:60]
+
+    summary = {
+        "total_paises": len(countries_map),
+        "total_ligas": len({(r.get("pais"), r.get("liga")) for r in serialized_rows}),
+        "total_partidos_proximos": len(serialized_rows),
+        "total_mercados_analizados": len(all_opportunities),
+        "total_senales": sum(int(r.get("signal_count") or 0) for r in serialized_rows),
+        "total_oportunidades_ev_plus": sum(1 for o in all_opportunities if o.get("flags", {}).get("ev_plus")),
+        "total_apuestas_fuertes": sum(int(r.get("strong_count") or 0) for r in serialized_rows),
+        "total_value_bets": sum(1 for o in all_opportunities if o.get("flags", {}).get("value")),
+        "totales_por_familia": family_totals,
+    }
+
+    leagues_tree = []
+    for country_payload in countries_map.values():
+        leagues_tree.append({
+            "pais": country_payload["pais"],
+            "partidos": country_payload["partidos"],
+            "ev_plus": country_payload["ev_plus"],
+            "value_bets": country_payload["value_bets"],
+            "ligas": list(country_payload["ligas"].values()),
+        })
+
+    return {
+        "summary": summary,
+        "paises": leagues_tree,
+        "ligas": [l for c in leagues_tree for l in c["ligas"]],
+        "partidos": serialized_rows,
+        "top_opportunities": ordered[:120],
+        "oportunidades_ev": [o for o in ordered if o.get("ev") is not None and o.get("ev", 0) > 0][:300],
+        "ev_principal": [r for r in serialized_rows if r.get("edge_principal") is not None][:200],
+        "market_telemetry": {str(r["fixture_id"]): build_market_telemetry(r, latest_odds_by_fixture.get(int(r["fixture_id"]))) for r in serialized_rows},
+        "telemetria_mercados": {str(r["fixture_id"]): build_market_telemetry(r, latest_odds_by_fixture.get(int(r["fixture_id"]))) for r in serialized_rows},
+        "apuestas_fuertes": [s for r in serialized_rows for s in (r.get("apuestas_fuertes") or [])],
+        "top_by_family": top_by_family,
+        "match_radar": match_radar,
+        "refresh_timestamp": utcnow().isoformat(),
+        "generated_at": utcnow().isoformat(),
+    }
+
+
 @app.get("/panel/partidos")
 def panel_partidos(
     liga_id: int = Query(0),
@@ -844,6 +1081,23 @@ def panel_partidos(
 ):
     data = get_predictions(liga_id=liga_id, only_value=only_value, min_prob=min_prob, limit=limit, db=db)
     return {"partidos": data["predictions"], "count": len(data["predictions"])}
+
+
+@app.get("/panel/dashboard")
+def panel_dashboard(
+    liga_id: int = Query(0),
+    only_value: int = Query(0),
+    limit: int = Query(2000),
+    db: Session = Depends(get_db),
+):
+    stmt = select(Prediction)
+    if liga_id:
+        stmt = stmt.where(Prediction.liga_id == liga_id)
+    if only_value:
+        stmt = stmt.where(Prediction.es_value_bet == 1)
+    stmt = stmt.order_by(asc(Prediction.hora), asc(Prediction.liga)).limit(limit)
+    rows = [r for r in db.execute(stmt).scalars().all() if is_fixture_eligible(r)]
+    return build_dashboard_payload(rows, db)
 
 
 @app.get("/panel/apuestas-fuertes")
