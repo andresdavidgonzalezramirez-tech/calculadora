@@ -660,19 +660,21 @@ def serialize_alert(a: PricingAlert) -> Dict[str, Any]:
     }
 
 
-def classify_market_family(code: Any = None, market: Any = None) -> str:
-    token = f"{code or ''} {market or ''}".upper()
-    if "CORNERS" in token:
+def classify_market_family(*aliases: Any) -> str:
+    token = " ".join(str(v or "") for v in aliases).upper()
+    token = token.replace("-", " ").replace("/", " ").replace("_", " ")
+
+    if any(k in token for k in ["CORNERS", "CORNERS", "CORNER", "SAQUES DE ESQUINA"]):
         return "corners"
-    if "CARDS" in token or "TARJET" in token:
+    if any(k in token for k in ["CARDS", "CARD", "TARJET", "AMARILLA", "ROJA"]):
         return "cards"
-    if "SHOTS" in token or "SOT" in token or "TIROS" in token or "PUERTA" in token:
+    if any(k in token for k in ["SHOTS", "SHOT", "SOT", "TIROS", "REMATES", "PUERTA"]):
         return "shots"
-    if "BTTS" in token or "AMBOS" in token:
+    if any(k in token for k in ["BTTS", "AMBOS MARCAN", "BOTH TEAMS TO SCORE"]):
         return "btts"
-    if any(k in token for k in ["1X2", "DC", "DRAW", "LOCAL", "VISITANTE"]):
+    if any(k in token for k in ["1X2", "DC", "DOUBLE CHANCE", "HOME WIN", "AWAY WIN", "EMPATE", "DRAW"]):
         return "1x2"
-    if any(k in token for k in ["OVER", "UNDER", "GOALS", "GOLES", "TOTAL"]):
+    if any(k in token for k in ["OVER", "UNDER", "GOALS", "GOLES", "TOTAL", "OU "]):
         return "goals"
     return "secondary"
 
@@ -689,7 +691,7 @@ def build_market_telemetry(serialized: Dict[str, Any], latest_odds: Optional[Odd
     def add_market(code: str, market: str, pick: Optional[str], model_prob: Optional[float], odds: Optional[float], edge: Optional[float], ev: Optional[float], source: str, subtype: Optional[str] = None) -> None:
         implied_prob = safe_ratio(1.0, odds) if odds and odds > 1 else None
         delta_prob = (model_prob - implied_prob) if (model_prob is not None and implied_prob is not None) else None
-        family = classify_market_family(code, market)
+        family = classify_market_family(code, market, subtype, serialized.get("mercado_principal"), serialized.get("market_code"), serialized.get("market"), serialized.get("market_name"))
         rank = num_or_none(serialized.get("confianza"))
         score = num_or_none(serialized.get("prob_apuesta"))
         value = bool(serialized.get("es_value_bet")) if ev is not None else None

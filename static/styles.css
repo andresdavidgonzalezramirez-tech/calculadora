@@ -61,3 +61,8 @@ summary { cursor: pointer; font-weight: 600; color: #cfe0ff; }
 .trace-pre { overflow: auto; max-height: 260px; font-size: 11px; border: 1px dashed #355194; border-radius: 10px; padding: 10px; background: #081027; color: #9ab7eb; }
 .empty { color: var(--muted); font-style: italic; }
 @media (max-width: 960px) { .hero { flex-direction: column; align-items: flex-start; } }
+.hero-actions-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn-secondary { border: 1px solid #5d6ea0; border-radius: 12px; padding: 10px 16px; background: #111f44; color: #d7e6ff; cursor: pointer; font-weight: 700; }
+.notices-panel { padding: 10px 14px; }
+.filter-notices { display: grid; gap: 8px; }
+.filter-notice { margin: 0; padding: 8px 10px; border: 1px solid #37518a; border-radius: 10px; background: rgba(17, 35, 74, .6); color: #c4dbff; font-size: 13px; }

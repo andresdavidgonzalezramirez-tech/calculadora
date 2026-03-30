@@ -15,7 +15,7 @@
           <p class="hero-subtitle">Panel de trading deportivo para detectar value bets con trazabilidad por país, liga, partido y familia de mercado.</p>
         </div>
         <div class="hero-actions">
-          <button id="refresh-btn" class="btn-primary" type="button">Actualizar listas</button>
+          <div class="hero-actions-row"><button id="refresh-btn" class="btn-primary" type="button">Actualizar listas</button><button id="reset-filters-btn" class="btn-secondary" type="button">Reset filtros</button></div>
           <div class="refresh-meta">
             <span id="refresh-state" class="badge status-badge neutral">Idle</span>
             <span id="last-updated">Última actualización: --</span>
@@ -55,6 +55,8 @@
           </div>
         </div>
       </section>
+
+      <section class="panel notices-panel"><div id="filter-notices" class="filter-notices"></div></section>
 
       <section class="panel"><div class="section-head"><h2>Top oportunidades del día</h2></div><div id="top-opportunities" class="opportunity-grid"></div></section>
       <section class="panel"><div class="section-head"><h2>Próximas oportunidades EV+</h2></div><div id="future-opportunities" class="opportunity-grid"></div></section>
