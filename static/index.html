@@ -3,33 +3,89 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Radar de Value Betting</title>
+    <title>Bankenbank · Radar EV Quant Dashboard</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
-    <main class="container">
-      <header class="hero">
-        <h1>Radar cuantitativo de oportunidades</h1>
-        <p id="status">Cargando datos del backend...</p>
+    <main class="app-shell">
+      <header class="hero panel">
+        <div>
+          <p class="eyebrow">BANKENBANK · OPERATIONS CONSOLE</p>
+          <h1>Radar cuantitativo EV-first</h1>
+          <p class="hero-subtitle">
+            Exploración integral por país, liga y partido con trazabilidad completa de señales, value y telemetría.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button id="refresh-btn" class="btn-primary" type="button">Actualizar listas</button>
+          <div class="refresh-meta">
+            <span id="refresh-state" class="badge status-badge neutral">Idle</span>
+            <span id="last-updated">Última actualización: --</span>
+          </div>
+        </div>
       </header>
 
-      <section>
-        <h2>Top oportunidades del día (EV+)</h2>
+      <section class="panel" aria-label="Resumen global">
+        <div class="section-head">
+          <h2>Resumen global</h2>
+        </div>
+        <div id="kpi-grid" class="kpi-grid"></div>
+      </section>
+
+      <section class="panel" aria-label="Controles y filtros">
+        <div class="section-head">
+          <h2>Exploración dinámica</h2>
+        </div>
+        <div class="controls-grid">
+          <div class="search-wrap">
+            <label for="search-input">Búsqueda</label>
+            <input id="search-input" type="search" placeholder="Equipo, mercado, pick, liga, país..." />
+          </div>
+          <div class="filters-grid" id="filters-grid">
+            <label>País<select id="filter-country"><option value="">Todos</option></select></label>
+            <label>Liga<select id="filter-league"><option value="">Todas</option></select></label>
+            <label>Equipo<select id="filter-team"><option value="">Todos</option></select></label>
+            <label>Mercado<select id="filter-market"><option value="">Todos</option></select></label>
+            <label>Cuota mín<input id="odds-min" type="number" step="0.01" placeholder="1.10" /></label>
+            <label>Cuota máx<input id="odds-max" type="number" step="0.01" placeholder="8.00" /></label>
+            <label>EV mín<input id="ev-min" type="number" step="0.001" placeholder="0.01" /></label>
+            <label>EV máx<input id="ev-max" type="number" step="0.001" placeholder="0.50" /></label>
+            <label>Edge mín %<input id="edge-min" type="number" step="0.1" placeholder="1" /></label>
+            <label>Edge máx %<input id="edge-max" type="number" step="0.1" placeholder="25" /></label>
+          </div>
+          <div class="quick-filters" id="quick-filters">
+            <button class="quick-filter" data-filter="only_ev">Solo EV+</button>
+            <button class="quick-filter" data-filter="only_value">Solo value bets</button>
+            <button class="quick-filter" data-filter="only_strong">Solo apuestas fuertes</button>
+            <button class="quick-filter" data-filter="secondary">Mercados secundarios</button>
+            <button class="quick-filter" data-filter="next_matches">Próximos partidos</button>
+            <button class="quick-filter" data-filter="signal_heavy">Partidos con más señales</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head"><h2>Top oportunidades del día</h2></div>
         <div id="top-opportunities" class="opportunity-grid"></div>
       </section>
 
-      <section>
-        <h2>Próximas oportunidades EV+</h2>
+      <section class="panel">
+        <div class="section-head"><h2>Próximas oportunidades EV+</h2></div>
         <div id="future-opportunities" class="opportunity-grid"></div>
       </section>
 
-      <section>
-        <h2>Mercados secundarios con valor</h2>
+      <section class="panel">
+        <div class="section-head"><h2>Mercados secundarios con valor</h2></div>
         <div id="secondary-opportunities" class="opportunity-grid"></div>
       </section>
 
-      <section>
-        <h2>Radar por partido</h2>
+      <section class="panel">
+        <div class="section-head"><h2>Explorador de ligas por país</h2></div>
+        <div id="league-explorer" class="league-explorer"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head"><h2>Radar por partido (trazabilidad completa)</h2></div>
         <div id="match-radar" class="match-list"></div>
       </section>
     </main>
@@ -37,13 +93,16 @@
     <template id="opportunity-template">
       <article class="opportunity-card">
         <div class="card-top">
-          <strong class="market-code"></strong>
-          <span class="market-group"></span>
+          <div>
+            <strong class="market-code"></strong>
+            <p class="market-name"></p>
+          </div>
+          <div class="card-badges"></div>
         </div>
         <p class="play"></p>
         <p class="meta"></p>
         <p class="metrics"></p>
-        <p class="reason"></p>
+        <p class="trace"></p>
       </article>
     </template>
 
