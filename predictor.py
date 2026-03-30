@@ -55,6 +55,22 @@ STABLE_MARKET_PRIORITY = {
     "O35_CARDS": 1.12,
 }
 
+CORNERS_MARKET_FAMILIES = {
+    "totals": ["O75_CORNERS", "O85_CORNERS", "O95_CORNERS"],
+    "team_totals": [],
+    "handicap": [],
+    "periods": [],
+    "race_to_x": [],
+}
+
+
+def corners_market_catalog() -> Dict[str, List[str]]:
+    """
+    Catálogo extensible de mercados de corners.
+    Los grupos vacíos están reservados para futuras implementaciones con datos suficientes.
+    """
+    return {k: list(v) for k, v in CORNERS_MARKET_FAMILIES.items()}
+
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
@@ -253,6 +269,31 @@ def implied_prob(decimal_odds: Optional[float]) -> Optional[float]:
     if not decimal_odds or decimal_odds <= 1.0:
         return None
     return 1.0 / decimal_odds
+
+
+def expected_value(decimal_odds: Optional[float], model_prob: Optional[float]) -> Optional[float]:
+    if decimal_odds is None or model_prob is None:
+        return None
+    if decimal_odds <= 1.0:
+        return None
+    return (decimal_odds * model_prob) - 1.0
+
+
+def market_metrics(decimal_odds: Optional[float], model_prob: Optional[float], fair_prob: Optional[float]) -> Dict[str, Any]:
+    implied = implied_prob(decimal_odds)
+    delta_prob = (model_prob - implied) if (model_prob is not None and implied is not None) else None
+    edge = (model_prob - fair_prob) if (model_prob is not None and fair_prob is not None) else None
+    ev = expected_value(decimal_odds, model_prob)
+    pricing_complete = all(v is not None for v in [decimal_odds, model_prob, implied, fair_prob, edge, ev])
+    return {
+        "implied_prob": implied,
+        "fair_prob": fair_prob,
+        "model_prob": model_prob,
+        "delta_prob": delta_prob,
+        "edge": edge,
+        "ev": ev,
+        "pricing_complete": pricing_complete,
+    }
 
 
 def _remove_overround_1x2(home: Optional[float], draw: Optional[float], away: Optional[float]) -> Dict[str, Optional[float]]:
@@ -698,8 +739,8 @@ def _market_edge_threshold(code: str) -> float:
     return MARKET_PROFILES.get(code, {}).get("edge_threshold", 0.05)
 
 
-def _signal_bucket(edge: float, prob: float, stability: float, reliability: float, has_odds: bool) -> str:
-    if not has_odds:
+def _signal_bucket(edge: Optional[float], prob: float, stability: float, reliability: float, has_odds: bool, has_fair_prob: bool) -> str:
+    if not has_odds or not has_fair_prob or edge is None:
         if prob >= 0.68 and stability >= 0.60:
             return "model_strong"
         if prob >= 0.60:
@@ -734,16 +775,17 @@ def _confidence_from_signal(prob: float, quality: float, edge: float, reliabilit
 
 
 def _pricing_flags(model_prob: float, fair_market_prob: Optional[float], odd: Optional[float], code: str) -> Dict[str, Any]:
+    implied = implied_prob(odd)
     if fair_market_prob is None or odd is None or odd <= 1.0:
         return {
-            "edge": 0.0,
+            "edge": None,
             "es_value_bet": False,
             "soft_value": False,
             "posible_error_cuota": False,
             "cuota_sospechosa": False,
             "oportunidad_detectada": False,
-            "probabilidad_implicita": None,
-            "probabilidad_justa": None,
+            "probabilidad_implicita": implied,
+            "probabilidad_justa": fair_market_prob,
         }
 
     edge = model_prob - fair_market_prob
@@ -760,7 +802,7 @@ def _pricing_flags(model_prob: float, fair_market_prob: Optional[float], odd: Op
         "posible_error_cuota": suspicious_gap or high_odd,
         "cuota_sospechosa": suspicious_gap or high_odd or depressed_price,
         "oportunidad_detectada": edge >= soft_threshold or suspicious_gap or high_odd,
-        "probabilidad_implicita": 1.0 / odd,
+        "probabilidad_implicita": implied,
         "probabilidad_justa": fair_market_prob,
     }
 
@@ -780,18 +822,23 @@ def _build_market(
     volatility = _market_volatility(code)
     stability = 1.0 - volatility
     pricing = _pricing_flags(prob, market_prob, odd, code)
+    metrics = market_metrics(odd, prob, market_prob)
     ease_bonus = STABLE_MARKET_PRIORITY.get(code, 1.0)
     has_odds = odd is not None and pricing["probabilidad_implicita"] is not None
-    signal_tier = _signal_bucket(pricing["edge"], prob, stability, reliability, has_odds)
+    has_fair_prob = market_prob is not None
+    signal_tier = _signal_bucket(pricing["edge"], prob, stability, reliability, has_odds, has_fair_prob)
+    edge_for_score = pricing["edge"] if pricing["edge"] is not None else -0.01
 
     score = (
         prob * 0.34
-        + max(pricing["edge"], -0.01) * 2.15
+        + max(edge_for_score, -0.01) * 2.15
         + data_quality * 0.18
         + reliability * 0.16
         + stability * 0.14
         + (0.08 if signal_tier in {"strong_value", "medium_value"} else 0.04 if signal_tier in {"low_value", "lean", "model_strong"} else 0.0)
     ) * ease_bonus
+    rank = _confidence_from_signal(prob, data_quality, edge_for_score, reliability, stability)
+    stake = _stake_units(rank, stability, edge_for_score, code)
 
     return {
         "code": code,
@@ -812,6 +859,14 @@ def _build_market(
         "data_quality": data_quality,
         "signal_tier": signal_tier,
         "score": score,
+        "rank": rank,
+        "stake": stake,
+        "implied_prob": metrics["implied_prob"],
+        "fair_prob": metrics["fair_prob"],
+        "model_prob": metrics["model_prob"],
+        "delta_prob": metrics["delta_prob"],
+        "ev": metrics["ev"],
+        "pricing_complete": metrics["pricing_complete"],
     }
 
 
@@ -884,8 +939,8 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "jugada": item["jugada"],
                 "probabilidad": int(round(item["prob"] * 100)),
                 "cuota": round(item["cuota"], 2) if item["cuota"] else None,
-                "edge": round(item["edge"] * 100, 2),
-                "value": bool(item["es_value_bet"] or item.get("soft_value")),
+                "edge": round(item["edge"] * 100, 2) if item["edge"] is not None else None,
+                "value": bool(item["pricing_complete"] and (item["es_value_bet"] or item.get("soft_value"))),
                 "signal_tier": bucket,
                 "signal_label": {
                     "strong_value": "Strong value",
@@ -900,6 +955,15 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "stability": round(item["stability"], 4),
                 "reliability": round(item["reliability"], 4),
                 "score": round(item["score"], 4),
+                "rank": item.get("rank"),
+                "stake": item.get("stake"),
+                "implied_prob": round(item["implied_prob"], 6) if item.get("implied_prob") is not None else None,
+                "fair_prob": round(item["fair_prob"], 6) if item.get("fair_prob") is not None else None,
+                "model_prob": round(item["model_prob"], 6) if item.get("model_prob") is not None else None,
+                "delta_prob": round(item["delta_prob"], 6) if item.get("delta_prob") is not None else None,
+                "ev": round(item["ev"], 6) if item.get("ev") is not None else None,
+                "pricing_complete": bool(item.get("pricing_complete")),
+                "code": item.get("code"),
             }
         )
         if len(out) >= 6:
@@ -916,8 +980,8 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "jugada": item["jugada"],
                 "probabilidad": int(round(item["prob"] * 100)),
                 "cuota": round(item["cuota"], 2) if item["cuota"] else None,
-                "edge": round(item["edge"] * 100, 2),
-                "value": bool(item["es_value_bet"] or item.get("soft_value")),
+                "edge": round(item["edge"] * 100, 2) if item["edge"] is not None else None,
+                "value": bool(item["pricing_complete"] and (item["es_value_bet"] or item.get("soft_value"))),
                 "signal_tier": "top_pick",
                 "signal_label": "Top pick",
                 "posible_error_cuota": bool(item.get("posible_error_cuota")),
@@ -926,6 +990,15 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "stability": round(item["stability"], 4),
                 "reliability": round(item["reliability"], 4),
                 "score": round(item["score"], 4),
+                "rank": item.get("rank"),
+                "stake": item.get("stake"),
+                "implied_prob": round(item["implied_prob"], 6) if item.get("implied_prob") is not None else None,
+                "fair_prob": round(item["fair_prob"], 6) if item.get("fair_prob") is not None else None,
+                "model_prob": round(item["model_prob"], 6) if item.get("model_prob") is not None else None,
+                "delta_prob": round(item["delta_prob"], 6) if item.get("delta_prob") is not None else None,
+                "ev": round(item["ev"], 6) if item.get("ev") is not None else None,
+                "pricing_complete": bool(item.get("pricing_complete")),
+                "code": item.get("code"),
             }
         )
     return out
@@ -1185,32 +1258,32 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
     dc_x2 = _clamp(away_win + draw, 0.18, 0.95)
     dc_12 = _clamp(home_win + away_win, 0.20, 0.93)
 
-    markets.append(_build_market("DC_1X", dc_1x, odds.get("dc_1x"), implied_prob(odds.get("dc_1x")), structural_quality, structural_quality, home_name, away_name))
-    markets.append(_build_market("DC_X2", dc_x2, odds.get("dc_x2"), implied_prob(odds.get("dc_x2")), structural_quality, structural_quality, home_name, away_name))
-    markets.append(_build_market("DC_12", dc_12, odds.get("dc_12"), implied_prob(odds.get("dc_12")), structural_quality, structural_quality, home_name, away_name))
+    markets.append(_build_market("DC_1X", dc_1x, odds.get("dc_1x"), None, structural_quality, structural_quality, home_name, away_name))
+    markets.append(_build_market("DC_X2", dc_x2, odds.get("dc_x2"), None, structural_quality, structural_quality, home_name, away_name))
+    markets.append(_build_market("DC_12", dc_12, odds.get("dc_12"), None, structural_quality, structural_quality, home_name, away_name))
 
-    markets.append(_build_market("OVER15", over15, odds.get("over15"), implied_prob(odds.get("over15")), structural_quality, structural_quality, home_name, away_name))
-    markets.append(_build_market("OVER25", over25, odds.get("over25"), implied_prob(odds.get("over25")), structural_quality, structural_quality, home_name, away_name))
-    markets.append(_build_market("OVER35", over35, odds.get("over35"), implied_prob(odds.get("over35")), structural_quality, structural_quality, home_name, away_name))
-    markets.append(_build_market("UNDER45", under45, odds.get("under45"), implied_prob(odds.get("under45")), structural_quality, structural_quality, home_name, away_name))
-    markets.append(_build_market("BTTS_YES", btts, odds.get("btts_yes"), implied_prob(odds.get("btts_yes")), structural_quality, structural_quality, home_name, away_name))
+    markets.append(_build_market("OVER15", over15, odds.get("over15"), None, structural_quality, structural_quality, home_name, away_name))
+    markets.append(_build_market("OVER25", over25, odds.get("over25"), None, structural_quality, structural_quality, home_name, away_name))
+    markets.append(_build_market("OVER35", over35, odds.get("over35"), None, structural_quality, structural_quality, home_name, away_name))
+    markets.append(_build_market("UNDER45", under45, odds.get("under45"), None, structural_quality, structural_quality, home_name, away_name))
+    markets.append(_build_market("BTTS_YES", btts, odds.get("btts_yes"), None, structural_quality, structural_quality, home_name, away_name))
 
     if corners_totales is not None:
-        markets.append(_build_market("O75_CORNERS", prob_over_lambda(corners_totales, 7.5), odds.get("over75_corners"), implied_prob(odds.get("over75_corners")), structural_quality, corners_quality, home_name, away_name))
-        markets.append(_build_market("O85_CORNERS", prob_over_lambda(corners_totales, 8.5), odds.get("over85_corners"), implied_prob(odds.get("over85_corners")), structural_quality, corners_quality, home_name, away_name))
-        markets.append(_build_market("O95_CORNERS", prob_over_lambda(corners_totales, 9.5), odds.get("over95_corners"), implied_prob(odds.get("over95_corners")), structural_quality, corners_quality, home_name, away_name))
+        markets.append(_build_market("O75_CORNERS", prob_over_lambda(corners_totales, 7.5), odds.get("over75_corners"), None, structural_quality, corners_quality, home_name, away_name))
+        markets.append(_build_market("O85_CORNERS", prob_over_lambda(corners_totales, 8.5), odds.get("over85_corners"), None, structural_quality, corners_quality, home_name, away_name))
+        markets.append(_build_market("O95_CORNERS", prob_over_lambda(corners_totales, 9.5), odds.get("over95_corners"), None, structural_quality, corners_quality, home_name, away_name))
 
     if tarjetas_totales is not None:
-        markets.append(_build_market("O35_CARDS", prob_over_lambda(tarjetas_totales, 3.5), odds.get("over35_cards"), implied_prob(odds.get("over35_cards")), structural_quality, cards_quality, home_name, away_name))
-        markets.append(_build_market("O45_CARDS", prob_over_lambda(tarjetas_totales, 4.5), odds.get("over45_cards"), implied_prob(odds.get("over45_cards")), structural_quality, cards_quality, home_name, away_name))
+        markets.append(_build_market("O35_CARDS", prob_over_lambda(tarjetas_totales, 3.5), odds.get("over35_cards"), None, structural_quality, cards_quality, home_name, away_name))
+        markets.append(_build_market("O45_CARDS", prob_over_lambda(tarjetas_totales, 4.5), odds.get("over45_cards"), None, structural_quality, cards_quality, home_name, away_name))
 
     if tiros_local is not None and puerta_local is not None and shots_home_quality >= 0.58:
-        markets.append(_build_market("SHOTS_HOME", 0.50 + ((tiros_local - LEAGUE_BASELINES["shots_home"]) / 20.0), odds.get("shots_home"), implied_prob(odds.get("shots_home")), structural_quality, shots_home_quality, home_name, away_name))
-        markets.append(_build_market("SOT_HOME", 0.50 + ((puerta_local - LEAGUE_BASELINES["shots_on_home"]) / 8.0), odds.get("sot_home"), implied_prob(odds.get("sot_home")), structural_quality, shots_home_quality, home_name, away_name))
+        markets.append(_build_market("SHOTS_HOME", 0.50 + ((tiros_local - LEAGUE_BASELINES["shots_home"]) / 20.0), odds.get("shots_home"), None, structural_quality, shots_home_quality, home_name, away_name))
+        markets.append(_build_market("SOT_HOME", 0.50 + ((puerta_local - LEAGUE_BASELINES["shots_on_home"]) / 8.0), odds.get("sot_home"), None, structural_quality, shots_home_quality, home_name, away_name))
 
     if tiros_visitante is not None and puerta_visitante is not None and shots_away_quality >= 0.58:
-        markets.append(_build_market("SHOTS_AWAY", 0.50 + ((tiros_visitante - LEAGUE_BASELINES["shots_away"]) / 20.0), odds.get("shots_away"), implied_prob(odds.get("shots_away")), structural_quality, shots_away_quality, home_name, away_name))
-        markets.append(_build_market("SOT_AWAY", 0.50 + ((puerta_visitante - LEAGUE_BASELINES["shots_on_away"]) / 8.0), odds.get("sot_away"), implied_prob(odds.get("sot_away")), structural_quality, shots_away_quality, home_name, away_name))
+        markets.append(_build_market("SHOTS_AWAY", 0.50 + ((tiros_visitante - LEAGUE_BASELINES["shots_away"]) / 20.0), odds.get("shots_away"), None, structural_quality, shots_away_quality, home_name, away_name))
+        markets.append(_build_market("SOT_AWAY", 0.50 + ((puerta_visitante - LEAGUE_BASELINES["shots_on_away"]) / 8.0), odds.get("sot_away"), None, structural_quality, shots_away_quality, home_name, away_name))
 
     best = _select_primary_bet(markets)
     apuestas_fuertes = _strong_bets(markets)
@@ -1226,7 +1299,8 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         else "EMPATE"
     )
 
-    confianza = _confidence_from_signal(best["prob"], best["data_quality"], best["edge"], best["reliability"], best["stability"])
+    best_edge_for_confidence = best["edge"] if best.get("edge") is not None else -0.01
+    confianza = _confidence_from_signal(best["prob"], best["data_quality"], best_edge_for_confidence, best["reliability"], best["stability"])
 
     return {
         "fixture_id": int(f["fixture_id"]),
@@ -1255,6 +1329,17 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         "over75_corners": prob_over75_corners,
         "over85_corners": prob_over85_corners,
         "over95_corners": prob_over95_corners,
+        "corners_markets": {
+            "totals": {
+                "over_7_5": {"model_prob": prob_over75_corners, "odds": odds.get("over75_corners")},
+                "over_8_5": {"model_prob": prob_over85_corners, "odds": odds.get("over85_corners")},
+                "over_9_5": {"model_prob": prob_over95_corners, "odds": odds.get("over95_corners")},
+            },
+            "team_totals": {},
+            "handicap": {},
+            "periods": {},
+            "race_to_x": {},
+        },
         "tarjetas_local": round(tarjetas_local, 3) if tarjetas_local is not None else None,
         "tarjetas_visitante": round(tarjetas_visitante, 3) if tarjetas_visitante is not None else None,
         "tarjetas_totales": round(tarjetas_totales, 3) if tarjetas_totales is not None else None,
@@ -1268,7 +1353,7 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         "mercado_principal": best["mercado"],
         "prob_apuesta": _round_prob(best["prob"]),
         "cuota_principal": round(best["cuota"], 2) if best["cuota"] else None,
-        "edge_principal": round(best["edge"], 6),
+        "edge_principal": round(best["edge"], 6) if best["edge"] is not None else None,
         "es_value_bet": 1 if best["es_value_bet"] else 0,
         "confianza": confianza,
         "apuestas_fuertes": apuestas_fuertes,
