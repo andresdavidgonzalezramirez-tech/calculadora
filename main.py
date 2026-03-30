@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
@@ -728,20 +729,12 @@ def coerce_predict_payload(payload: Any) -> IngestRunRequest:
 
 @app.get("/")
 def root():
-    return {
-        "status": "ok",
-        "estado": "ok",
-        "health": "/health",
-        "ingest": "/ingest/run",
-        "predict": "/predict",
-        "panel_partidos": "/panel/partidos",
-        "panel_apuestas_fuertes": "/panel/apuestas-fuertes",
-        "panel_resumen": "/panel/resumen",
-        "predictions": "/predictions",
-        "summary": "/summary",
-        "alerts": "/alerts",
-        "value_bets": "/value-bets",
-    }
+    return FileResponse(os.path.join(frontend_dir, "index.html"))
+
+
+@app.get("/panel")
+def panel_root():
+    return FileResponse(os.path.join(frontend_dir, "index.html"))
 
 
 @app.get("/health")
@@ -978,4 +971,4 @@ def value_bets(min_prob: int = Query(70), limit: int = Query(500), db: Session =
 # Frontend unificado (panel estático servido por la misma app)
 frontend_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(frontend_dir):
-    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
+    app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
