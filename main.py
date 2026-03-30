@@ -728,7 +728,33 @@ def build_market_telemetry(serialized: Dict[str, Any], latest_odds: Optional[Odd
         value = bool(serialized.get("es_value_bet")) if resolved_ev is not None else None
         strong = bool(serialized.get("strong_count", 0) > 0) if resolved_ev is not None else None
         market_complete = all(v is not None for v in [odds, model_prob, implied_prob, resolved_edge, resolved_ev])
-        completeness_reason = None if market_complete else "mercado_detectado_sin_pricing_completo"
+        if market_complete:
+            completeness_reason = None
+        elif odds is None:
+            completeness_reason = "missing_odds"
+        elif model_prob is None:
+            completeness_reason = "missing_model_probability"
+        elif implied_prob is None:
+            completeness_reason = "missing_implied_probability"
+        elif resolved_edge is None:
+            completeness_reason = "missing_edge"
+        elif resolved_ev is None:
+            completeness_reason = "missing_ev"
+        else:
+            completeness_reason = "mercado_detectado_sin_pricing_completo"
+        missing_fields = []
+        if odds is None:
+            missing_fields.append("odds")
+        if model_prob is None:
+            missing_fields.append("model_prob")
+        if implied_prob is None:
+            missing_fields.append("implied_prob")
+        if resolved_edge is None:
+            missing_fields.append("edge")
+        if resolved_ev is None:
+            missing_fields.append("ev")
+        model_status = "ready" if model_prob is not None else "missing_model_probability"
+        pricing_status = "complete" if market_complete else f"incomplete:{completeness_reason}"
         market_rows.append({
             "code": code,
             "family": family,
@@ -751,6 +777,9 @@ def build_market_telemetry(serialized: Dict[str, Any], latest_odds: Optional[Odd
             "discard_reason": None,
             "market_complete": market_complete,
             "completeness_reason": completeness_reason,
+            "missing_fields": missing_fields,
+            "model_status": model_status,
+            "pricing_status": pricing_status,
             "flags": {
                 "ev_plus": bool(resolved_ev is not None and resolved_ev > 0),
                 "value": value,
@@ -1082,6 +1111,40 @@ def build_dashboard_payload(rows: List[Prediction], db: Session) -> Dict[str, An
         "totales_por_familia": family_totals,
     }
 
+    forensic_family: Dict[str, Dict[str, Any]] = {}
+    for opp in all_opportunities:
+        family = str(opp.get("family") or "secondary")
+        bucket = forensic_family.setdefault(
+            family,
+            {
+                "total": 0,
+                "complete": 0,
+                "incomplete": 0,
+                "missing_odds": 0,
+                "missing_model_probability": 0,
+                "missing_implied_probability": 0,
+                "missing_edge": 0,
+                "missing_ev": 0,
+                "ev_plus": 0,
+            },
+        )
+        bucket["total"] += 1
+        if opp.get("market_complete"):
+            bucket["complete"] += 1
+        else:
+            bucket["incomplete"] += 1
+            reason = str(opp.get("completeness_reason") or "")
+            if reason in bucket:
+                bucket[reason] += 1
+        if opp.get("flags", {}).get("ev_plus"):
+            bucket["ev_plus"] += 1
+
+    for bucket in forensic_family.values():
+        total = max(1, int(bucket.get("total", 0)))
+        bucket["complete_pct"] = round((bucket.get("complete", 0) / total) * 100, 2)
+        bucket["incomplete_pct"] = round((bucket.get("incomplete", 0) / total) * 100, 2)
+        bucket["ev_plus_pct"] = round((bucket.get("ev_plus", 0) / total) * 100, 2)
+
     leagues_tree = []
     for country_payload in countries_map.values():
         leagues_tree.append({
@@ -1105,6 +1168,10 @@ def build_dashboard_payload(rows: List[Prediction], db: Session) -> Dict[str, An
         "apuestas_fuertes": [s for r in serialized_rows for s in (r.get("apuestas_fuertes") or [])],
         "top_by_family": top_by_family,
         "match_radar": match_radar,
+        "forensics": {
+            "families": forensic_family,
+            "generated_at": utcnow().isoformat(),
+        },
         "refresh_timestamp": utcnow().isoformat(),
         "generated_at": utcnow().isoformat(),
     }
