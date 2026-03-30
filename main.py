@@ -23,7 +23,7 @@ from db import (
     init_db,
     utcnow,
 )
-from predictor import calcular_alerta_pricing, calcular_partido, expected_value
+from predictor import calcular_alerta_pricing, calcular_partido
 
 
 app = FastAPI(title="Proyecto Apuestas Reales", version="4.3.0")
@@ -159,11 +159,6 @@ def synthesize_signal_from_fields(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
     prob = num_or_none(raw.get("prob_apuesta"))
     cuota = num_or_none(raw.get("cuota_principal"))
     edge = num_or_none(raw.get("edge_principal"), 6) or 0.0
-    fair_prob = num_or_none(raw.get("probabilidad_justa_principal"))
-    implied = (1.0 / cuota) if (cuota is not None and cuota > 1.0) else None
-    delta_prob = (prob - implied) if (prob is not None and implied is not None) else None
-    ev = expected_value(cuota, prob)
-    pricing_complete = all(v is not None for v in [cuota, prob, implied, fair_prob, ev])
     confianza = int_or_none(raw.get("confianza")) or 0
     posible_error = bool(raw.get("posible_error_cuota") or raw.get("posibleErrorCuota"))
     cuota_sospechosa = bool(raw.get("cuota_sospechosa") or raw.get("cuotaSospechosa"))
@@ -191,7 +186,7 @@ def synthesize_signal_from_fields(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
         "probabilidad": pct_or_none(prob, 0) if prob is not None else None,
         "cuota": num_or_none(cuota, 4) if cuota is not None else None,
         "edge": pct_or_none(edge, 2),
-        "value": bool(value and pricing_complete),
+        "value": value,
         "signal_tier": tier,
         "signal_label": label,
         "posible_error_cuota": posible_error,
@@ -201,12 +196,6 @@ def synthesize_signal_from_fields(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
         "reliability": num_or_none(raw.get("market_reliability"), 4),
         "score": num_or_none(raw.get("prob_apuesta"), 4),
         "confianza": confianza,
-        "implied_prob": num_or_none(implied, 6),
-        "fair_prob": fair_prob,
-        "model_prob": num_or_none(prob, 6),
-        "delta_prob": num_or_none(delta_prob, 6),
-        "ev": num_or_none(ev, 6),
-        "pricing_complete": pricing_complete,
         "synthesized": True,
     }]
 
@@ -370,7 +359,6 @@ def store_odds_snapshot(db: Session, item: FixtureInput) -> None:
             over75_corners=odds.get("over75_corners"),
             over85_corners=odds.get("over85_corners"),
             over95_corners=odds.get("over95_corners"),
-            corners_lines=odds.get("corners_lines"),
             over35_cards=odds.get("over35_cards"),
             over45_cards=odds.get("over45_cards"),
             shots_home=odds.get("shots_home"),
@@ -419,7 +407,6 @@ def upsert_prediction(db: Session, result: Dict[str, Any], run_id: int) -> None:
     existing.over75_corners = result.get("over75_corners")
     existing.over85_corners = result.get("over85_corners")
     existing.over95_corners = result.get("over95_corners")
-    existing.corners_markets = result.get("corners_markets")
 
     existing.tarjetas_local = result.get("tarjetas_local")
     existing.tarjetas_visitante = result.get("tarjetas_visitante")
@@ -568,7 +555,6 @@ def serialize_prediction(p: Prediction) -> Dict[str, Any]:
         "over75_corners": num_or_none(p.over75_corners, 6),
         "over75Corners": pct_or_none(p.over75_corners, 0),
         "over95Corners": pct_or_none(p.over95_corners, 0),
-        "corners_markets": p.corners_markets if isinstance(p.corners_markets, dict) else None,
 
         "tarjetas_local": num_or_none(p.tarjetas_local, 4),
         "tarjetas_visitante": num_or_none(p.tarjetas_visitante, 4),
@@ -605,8 +591,6 @@ def serialize_prediction(p: Prediction) -> Dict[str, Any]:
 
         "edge_principal": num_or_none(p.edge_principal, 6),
         "edgePrincipal": pct_or_none(p.edge_principal, 2),
-        "ev_principal": expected_value(num_or_none(p.cuota_principal), num_or_none(p.prob_apuesta)),
-        "evPrincipal": expected_value(num_or_none(p.cuota_principal), num_or_none(p.prob_apuesta)),
 
         "es_value_bet": bool(int(p.es_value_bet or 0)) or signal_summary["value_count"] > 0,
         "esValueBet": bool(int(p.es_value_bet or 0)) or signal_summary["value_count"] > 0,
@@ -704,35 +688,18 @@ def safe_ratio(numerator: Optional[float], denominator: Optional[float]) -> Opti
 def build_market_telemetry(serialized: Dict[str, Any], latest_odds: Optional[OddsSnapshot]) -> Dict[str, Dict[str, Any]]:
     market_rows: List[Dict[str, Any]] = []
 
-    def add_market(
-        code: str,
-        market: str,
-        pick: Optional[str],
-        model_prob: Optional[float],
-        odds: Optional[float],
-        fair_prob: Optional[float],
-        edge: Optional[float],
-        ev: Optional[float],
-        source: str,
-        subtype: Optional[str] = None,
-        rank: Optional[float] = None,
-        score: Optional[float] = None,
-        stake: Optional[float] = None,
-        strong_signal: Optional[bool] = None,
-        value_flag: Optional[bool] = None,
-    ) -> None:
+    def add_market(code: str, market: str, pick: Optional[str], model_prob: Optional[float], odds: Optional[float], edge: Optional[float], ev: Optional[float], source: str, subtype: Optional[str] = None) -> None:
         implied_prob = safe_ratio(1.0, odds) if odds and odds > 1 else None
         delta_prob = (model_prob - implied_prob) if (model_prob is not None and implied_prob is not None) else None
-        resolved_edge = edge if edge is not None else ((model_prob - fair_prob) if (model_prob is not None and fair_prob is not None) else None)
-        resolved_ev = ev if ev is not None else expected_value(odds, model_prob)
+        resolved_edge = edge if edge is not None else delta_prob
+        resolved_ev = ev if ev is not None else ((odds * model_prob - 1.0) if (odds is not None and model_prob is not None) else None)
         family = classify_market_family(code, market, subtype, serialized.get("mercado_principal"), serialized.get("market_code"), serialized.get("market"), serialized.get("market_name"))
-        market_rank = rank if rank is not None else None
-        market_score = score if score is not None else None
-        market_stake = stake if stake is not None else None
-        pricing_complete = all(v is not None for v in [odds, model_prob, implied_prob, fair_prob, resolved_edge, resolved_ev])
-        completeness_reason = None if pricing_complete else "mercado_detectado_sin_pricing_completo"
-        value = bool(value_flag) if (value_flag is not None and pricing_complete) else False
-        strong = bool(strong_signal) if (strong_signal is not None and pricing_complete) else False
+        rank = num_or_none(serialized.get("confianza"))
+        score = num_or_none(serialized.get("prob_apuesta"))
+        value = bool(serialized.get("es_value_bet")) if resolved_ev is not None else None
+        strong = bool(serialized.get("strong_count", 0) > 0) if resolved_ev is not None else None
+        market_complete = all(v is not None for v in [odds, model_prob, implied_prob, resolved_edge, resolved_ev])
+        completeness_reason = None if market_complete else "mercado_detectado_sin_pricing_completo"
         market_rows.append({
             "code": code,
             "family": family,
@@ -742,25 +709,23 @@ def build_market_telemetry(serialized: Dict[str, Any], latest_odds: Optional[Odd
             "odds": num_or_none(odds, 4),
             "model_prob": num_or_none(model_prob, 6),
             "implied_prob": num_or_none(implied_prob, 6),
-            "fair_prob": num_or_none(fair_prob, 6),
             "delta_prob": num_or_none(delta_prob, 6),
             "edge": num_or_none(resolved_edge, 6),
             "ev": num_or_none(resolved_ev, 6),
-            "rank": market_rank,
-            "score": market_score,
-            "stake": num_or_none(market_stake, 4) if market_stake is not None else None,
+            "rank": rank,
+            "score": score,
+            "stake": num_or_none(serialized.get("stake_sugerido_unidades"), 4),
             "source": source,
-            "reason_inclusion": "evaluado_por_modelo" if pricing_complete else "mercado_detectado",
-            "inclusion_reason": "evaluado_por_modelo" if pricing_complete else "mercado_detectado",
+            "reason_inclusion": "evaluado_por_modelo" if market_complete else "mercado_detectado",
+            "inclusion_reason": "evaluado_por_modelo" if market_complete else "mercado_detectado",
             "reason_discard": None,
             "discard_reason": None,
-            "pricing_complete": pricing_complete,
-            "market_complete": pricing_complete,
+            "market_complete": market_complete,
             "completeness_reason": completeness_reason,
             "flags": {
-                "ev_plus": bool(pricing_complete and resolved_ev is not None and resolved_ev > 0),
+                "ev_plus": bool(resolved_ev is not None and resolved_ev > 0),
                 "value": value,
-                "no_value": bool(pricing_complete and not value),
+                "no_value": bool(value is False),
                 "strong_signal": strong,
                 "secondary_market": family in {"corners", "cards", "shots", "secondary"},
             },
@@ -774,47 +739,20 @@ def build_market_telemetry(serialized: Dict[str, Any], latest_odds: Optional[Odd
         serialized.get("apuesta_principal"),
         num_or_none(serialized.get("prob_apuesta")),
         num_or_none(serialized.get("cuota_principal")),
-        num_or_none(serialized.get("probabilidad_justa_principal")),
         num_or_none(serialized.get("edge_principal")),
-        expected_value(num_or_none(serialized.get("cuota_principal")), num_or_none(serialized.get("prob_apuesta"))),
+        num_or_none(serialized.get("edge_principal")) if serialized.get("edge_principal") is not None else None,
         "ev_principal",
         subtype="principal",
-        rank=num_or_none(serialized.get("confianza")),
-        score=num_or_none(serialized.get("prob_apuesta")),
-        stake=num_or_none(serialized.get("stake_sugerido_unidades")),
-        strong_signal=bool(serialized.get("top_signal_tier") in {"strong_value", "medium_value"}),
-        value_flag=bool(serialized.get("es_value_bet")),
     )
 
     for signal in normalize_signals(serialized.get("apuestas_fuertes")):
         market_name = signal.get("mercado") or "Market signal"
         code = str(signal.get("code") or signal.get("mercado_codigo") or market_name).upper().replace(" ", "_")
-        model_prob = num_or_none(signal.get("model_prob"))
-        if model_prob is None:
-            model_prob = safe_ratio(num_or_none(signal.get("probabilidad")), 100.0) if signal.get("probabilidad") is not None else None
+        model_prob = safe_ratio(num_or_none(signal.get("probabilidad")), 100.0) if signal.get("probabilidad") is not None else None
         odds = num_or_none(signal.get("cuota"))
-        fair_prob = num_or_none(signal.get("fair_prob"))
         edge = safe_ratio(num_or_none(signal.get("edge")), 100.0) if signal.get("edge") is not None else None
-        ev = num_or_none(signal.get("ev"))
-        if ev is None:
-            ev = expected_value(odds, model_prob)
-        add_market(
-            code,
-            str(market_name),
-            signal.get("jugada"),
-            model_prob,
-            odds,
-            fair_prob,
-            edge,
-            ev,
-            "apuestas_fuertes",
-            subtype="signal",
-            rank=num_or_none(signal.get("rank")),
-            score=num_or_none(signal.get("score")),
-            stake=num_or_none(signal.get("stake")),
-            strong_signal=bool(signal.get("signal_tier") in {"strong_value", "medium_value"}),
-            value_flag=bool(signal.get("value")),
-        )
+        ev = (odds * model_prob - 1.0) if (odds is not None and model_prob is not None) else None
+        add_market(code, str(market_name), signal.get("jugada"), model_prob, odds, edge, ev, "apuestas_fuertes", subtype="signal")
 
     if latest_odds:
         odds_map = [
@@ -829,8 +767,9 @@ def build_market_telemetry(serialized: Dict[str, Any], latest_odds: Optional[Odd
             ("SOT_AWAY", "Shots on target Away", latest_odds.sot_away, None, "shots"),
         ]
         for code, market, odds, model_prob, subtype in odds_map:
-            ev = expected_value(odds, model_prob)
-            add_market(code, market, "OVER", model_prob, num_or_none(odds), None, None, ev, "odds_snapshot", subtype=subtype)
+            implied = safe_ratio(1.0, odds) if odds and odds > 1 else None
+            ev = (odds * model_prob - 1.0) if (odds is not None and model_prob is not None) else None
+            add_market(code, market, "OVER", model_prob, num_or_none(odds), None, ev, "odds_snapshot", subtype=subtype)
 
     telemetry: Dict[str, Dict[str, Any]] = {}
     for row in market_rows:
@@ -1076,7 +1015,7 @@ def build_dashboard_payload(rows: List[Prediction], db: Session) -> Dict[str, An
             "oportunidades_excluidas": excluded,
             "top_opportunities": opps[:8],
             "oportunidades_ev": [o for o in opps if o.get("ev") is not None and o.get("ev", 0) > 0],
-            "ev_principal": expected_value(num_or_none(row.get("cuota_principal")), num_or_none(row.get("prob_apuesta"))),
+            "ev_principal": num_or_none(row.get("edge_principal")) if row.get("edge_principal") is not None else None,
             "market_telemetry": telemetry,
             "telemetria_mercados": telemetry,
             "apuestas_fuertes": row.get("apuestas_fuertes") or [],
