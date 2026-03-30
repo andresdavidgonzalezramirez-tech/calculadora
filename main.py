@@ -250,6 +250,23 @@ class FixtureInput(BaseModel):
     head_to_head: List[Dict[str, Any]] = Field(default_factory=list)
     odds: Dict[str, Any] = Field(default_factory=dict)
     collection_meta: Dict[str, Any] = Field(default_factory=dict)
+    coverage_flags: Dict[str, Any] = Field(default_factory=dict)
+    request_meta: Dict[str, Any] = Field(default_factory=dict)
+    market_blocking_reasons: Dict[str, Any] = Field(default_factory=dict)
+
+    odds_ready: Optional[bool] = None
+    goals_stats_available: Optional[bool] = None
+    form_ready: Optional[bool] = None
+    goals_ready: Optional[bool] = None
+    corners_ready: Optional[bool] = None
+    shots_ready: Optional[bool] = None
+    cards_ready: Optional[bool] = None
+    publish_value_allowed: Optional[bool] = None
+    corners_publish_allowed: Optional[bool] = None
+    shots_publish_allowed: Optional[bool] = None
+    shots_total_publish_allowed: Optional[bool] = None
+    shots_on_target_publish_allowed: Optional[bool] = None
+    cards_publish_allowed: Optional[bool] = None
 
 
 class IngestRunRequest(BaseModel):
@@ -338,33 +355,45 @@ def store_stats_cache(db: Session, item: FixtureInput) -> None:
 def store_odds_snapshot(db: Session, item: FixtureInput) -> None:
     odds = item.odds or {}
     meta = item.collection_meta or {}
+    goals_totals = ((odds.get("totals") or {}).get("goals") or {}) if isinstance(odds, dict) else {}
+    corners_totals = ((odds.get("totals") or {}).get("corners") or {}) if isinstance(odds, dict) else {}
+    cards_totals = ((odds.get("totals") or {}).get("cards") or {}) if isinstance(odds, dict) else {}
+    match_winner = (odds.get("match_winner") or {}) if isinstance(odds, dict) else {}
+    double_chance = (odds.get("double_chance") or {}) if isinstance(odds, dict) else {}
+    shots_totals = ((odds.get("totals") or {}).get("shots") or {}) if isinstance(odds, dict) else {}
+    sot_totals = ((odds.get("totals") or {}).get("shots_on_target") or {}) if isinstance(odds, dict) else {}
+
+    home_shots_over = shots_totals.get("home_first_over") if isinstance(shots_totals.get("home_first_over"), dict) else {}
+    away_shots_over = shots_totals.get("away_first_over") if isinstance(shots_totals.get("away_first_over"), dict) else {}
+    home_sot_over = sot_totals.get("home_first_over") if isinstance(sot_totals.get("home_first_over"), dict) else {}
+    away_sot_over = sot_totals.get("away_first_over") if isinstance(sot_totals.get("away_first_over"), dict) else {}
 
     db.add(
         OddsSnapshot(
             fixture_id=item.fixture_id,
             snapshot_at=utcnow(),
-            bookmaker_id=meta.get("bookmaker_preferred"),
-            bookmaker_name=meta.get("bookmaker_name"),
-            home=odds.get("home"),
-            draw=odds.get("draw"),
-            away=odds.get("away"),
-            over15=odds.get("over15"),
-            over25=odds.get("over25"),
-            over35=odds.get("over35"),
-            under45=odds.get("under45"),
-            btts_yes=odds.get("btts_yes"),
-            dc_1x=odds.get("dc_1x"),
-            dc_x2=odds.get("dc_x2"),
-            dc_12=odds.get("dc_12"),
-            over75_corners=odds.get("over75_corners"),
-            over85_corners=odds.get("over85_corners"),
-            over95_corners=odds.get("over95_corners"),
-            over35_cards=odds.get("over35_cards"),
-            over45_cards=odds.get("over45_cards"),
-            shots_home=odds.get("shots_home"),
-            shots_away=odds.get("shots_away"),
-            sot_home=odds.get("sot_home"),
-            sot_away=odds.get("sot_away"),
+            bookmaker_id=odds.get("bookmaker_id") or meta.get("bookmaker_preferred"),
+            bookmaker_name=odds.get("bookmaker_name") or meta.get("bookmaker_name"),
+            home=match_winner.get("home"),
+            draw=match_winner.get("draw"),
+            away=match_winner.get("away"),
+            over15=goals_totals.get("over_1_5"),
+            over25=goals_totals.get("over_2_5"),
+            over35=goals_totals.get("over_3_5"),
+            under45=goals_totals.get("under_4_5"),
+            btts_yes=(odds.get("both_teams_to_score") or {}).get("yes"),
+            dc_1x=double_chance.get("home_or_draw"),
+            dc_x2=double_chance.get("draw_or_away"),
+            dc_12=double_chance.get("home_or_away"),
+            over75_corners=corners_totals.get("over_7_5"),
+            over85_corners=corners_totals.get("over_8_5"),
+            over95_corners=corners_totals.get("over_9_5"),
+            over35_cards=cards_totals.get("over_3_5"),
+            over45_cards=cards_totals.get("over_4_5"),
+            shots_home=home_shots_over.get("odd"),
+            shots_away=away_shots_over.get("odd"),
+            sot_home=home_sot_over.get("odd"),
+            sot_away=away_sot_over.get("odd"),
             raw_payload=odds,
         )
     )

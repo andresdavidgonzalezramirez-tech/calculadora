@@ -601,11 +601,54 @@ def _pick_odds(flat: Dict[str, Any], *aliases: str) -> Optional[float]:
     return None
 
 
+def _nested_bool(data: Dict[str, Any], path: List[str]) -> Optional[bool]:
+    value = _nested(data, path, None)
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _extract_threshold_odd(raw: Any) -> Dict[str, Optional[float]]:
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Optional[float]] = {}
+    for key, value in raw.items():
+        norm_key = str(key or "").strip().lower().replace(".", "_")
+        odd = _safe_float(value, 0.0)
+        if odd > 1.0:
+            out[norm_key] = odd
+    return out
+
+
 def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
     sources = []
+    flat: Dict[str, Any] = {}
     odds_obj = fixture.get("odds")
     if odds_obj:
         sources.append(odds_obj)
+        if isinstance(odds_obj, dict):
+            totals = odds_obj.get("totals") or {}
+            goals = totals.get("goals") or {}
+            corners = totals.get("corners") or {}
+            cards = totals.get("cards") or {}
+
+            if isinstance(goals, dict):
+                flat.update(goals)
+            flat.update(_extract_threshold_odd(corners))
+            flat.update(_extract_threshold_odd(cards))
+
+            home_shots = _nested(odds_obj, ["totals", "shots", "home_first_over", "odd"])
+            away_shots = _nested(odds_obj, ["totals", "shots", "away_first_over", "odd"])
+            home_sot = _nested(odds_obj, ["totals", "shots_on_target", "home_first_over", "odd"])
+            away_sot = _nested(odds_obj, ["totals", "shots_on_target", "away_first_over", "odd"])
+            if home_shots is not None:
+                flat["shots_home"] = home_shots
+            if away_shots is not None:
+                flat["shots_away"] = away_shots
+            if home_sot is not None:
+                flat["sot_home"] = home_sot
+            if away_sot is not None:
+                flat["sot_away"] = away_sot
 
     for key in ["bookmakers", "markets", "odds_data", "market_odds"]:
         if fixture.get(key):
@@ -628,7 +671,6 @@ def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
     if collection_meta:
         sources.append(collection_meta)
 
-    flat = {}
     for source in sources:
         flat.update(_collect_odds_map(source))
 
@@ -644,11 +686,11 @@ def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
         "dc_1x": _pick_odds(flat, "double_chance_1x", "dc_1x", "1x", "doublechance_1x"),
         "dc_x2": _pick_odds(flat, "double_chance_x2", "dc_x2", "x2", "doublechance_x2"),
         "dc_12": _pick_odds(flat, "double_chance_12", "dc_12", "12", "doublechance_12"),
-        "over75_corners": _pick_odds(flat, "over75_corners", "corners_over_7_5", "over_7_5_corners", "total_corners_over_7_5"),
-        "over85_corners": _pick_odds(flat, "over85_corners", "corners_over_8_5", "over_8_5_corners", "total_corners_over_8_5"),
-        "over95_corners": _pick_odds(flat, "over95_corners", "corners_over_9_5", "over_9_5_corners", "total_corners_over_9_5"),
-        "over35_cards": _pick_odds(flat, "over35_cards", "cards_over_3_5", "over_3_5_cards", "total_cards_over_3_5"),
-        "over45_cards": _pick_odds(flat, "over45_cards", "cards_over_4_5", "over_4_5_cards", "total_cards_over_4_5"),
+        "over75_corners": _pick_odds(flat, "over75_corners", "over_7_5", "corners_over_7_5", "over_7_5_corners", "total_corners_over_7_5"),
+        "over85_corners": _pick_odds(flat, "over85_corners", "over_8_5", "corners_over_8_5", "over_8_5_corners", "total_corners_over_8_5"),
+        "over95_corners": _pick_odds(flat, "over95_corners", "over_9_5", "corners_over_9_5", "over_9_5_corners", "total_corners_over_9_5"),
+        "over35_cards": _pick_odds(flat, "over35_cards", "over_3_5", "cards_over_3_5", "over_3_5_cards", "total_cards_over_3_5"),
+        "over45_cards": _pick_odds(flat, "over45_cards", "over_4_5", "cards_over_4_5", "over_4_5_cards", "total_cards_over_4_5"),
         "shots_home": _pick_odds(flat, "shots_home", "home_shots_over"),
         "shots_away": _pick_odds(flat, "shots_away", "away_shots_over"),
         "sot_home": _pick_odds(flat, "sot_home", "home_shots_on_target_over"),
@@ -1018,6 +1060,17 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
     form_away = _resolve_form_factor(f.get("form_away"), away_stats["form_factor"])
 
     odds = extract_odds(f)
+    collection_meta = f.get("collection_meta") if isinstance(f.get("collection_meta"), dict) else {}
+    feature_availability = collection_meta.get("feature_availability") if isinstance(collection_meta.get("feature_availability"), dict) else {}
+    market_blocking_reasons = f.get("market_blocking_reasons") if isinstance(f.get("market_blocking_reasons"), dict) else {}
+
+    goals_ready = f.get("goals_ready") if isinstance(f.get("goals_ready"), bool) else _nested_bool(feature_availability, ["goals", "ready"])
+    publish_value_allowed = f.get("publish_value_allowed") if isinstance(f.get("publish_value_allowed"), bool) else _nested_bool(feature_availability, ["goals", "publish_allowed"])
+    corners_ready = f.get("corners_ready") if isinstance(f.get("corners_ready"), bool) else _nested_bool(feature_availability, ["corners", "ready"])
+    cards_ready = f.get("cards_ready") if isinstance(f.get("cards_ready"), bool) else _nested_bool(feature_availability, ["cards", "ready"])
+    shots_total_ready = f.get("shots_total_ready") if isinstance(f.get("shots_total_ready"), bool) else _nested_bool(feature_availability, ["shots_total", "ready"])
+    shots_on_target_ready = f.get("shots_on_target_ready") if isinstance(f.get("shots_on_target_ready"), bool) else _nested_bool(feature_availability, ["shots_on_target", "ready"])
+
     odds_presence = sum(1 for k in ["home", "draw", "away", "over25", "btts_yes"] if odds.get(k) is not None) / 5.0
     goals_presence = sum(1 for v in [f.get("gf_home"), f.get("ga_home"), f.get("gf_away"), f.get("ga_away"), home_stats.get("gf"), home_stats.get("ga"), away_stats.get("gf"), away_stats.get("ga")] if _parse_avg_number(v) is not None)
     goals_presence = _clamp(goals_presence / 8.0, 0.25, 1.0)
@@ -1195,21 +1248,23 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
     markets.append(_build_market("UNDER45", under45, odds.get("under45"), implied_prob(odds.get("under45")), structural_quality, structural_quality, home_name, away_name))
     markets.append(_build_market("BTTS_YES", btts, odds.get("btts_yes"), implied_prob(odds.get("btts_yes")), structural_quality, structural_quality, home_name, away_name))
 
-    if corners_totales is not None:
+    if corners_totales is not None and corners_ready is not False:
         markets.append(_build_market("O75_CORNERS", prob_over_lambda(corners_totales, 7.5), odds.get("over75_corners"), implied_prob(odds.get("over75_corners")), structural_quality, corners_quality, home_name, away_name))
         markets.append(_build_market("O85_CORNERS", prob_over_lambda(corners_totales, 8.5), odds.get("over85_corners"), implied_prob(odds.get("over85_corners")), structural_quality, corners_quality, home_name, away_name))
         markets.append(_build_market("O95_CORNERS", prob_over_lambda(corners_totales, 9.5), odds.get("over95_corners"), implied_prob(odds.get("over95_corners")), structural_quality, corners_quality, home_name, away_name))
 
-    if tarjetas_totales is not None:
+    if tarjetas_totales is not None and cards_ready is not False:
         markets.append(_build_market("O35_CARDS", prob_over_lambda(tarjetas_totales, 3.5), odds.get("over35_cards"), implied_prob(odds.get("over35_cards")), structural_quality, cards_quality, home_name, away_name))
         markets.append(_build_market("O45_CARDS", prob_over_lambda(tarjetas_totales, 4.5), odds.get("over45_cards"), implied_prob(odds.get("over45_cards")), structural_quality, cards_quality, home_name, away_name))
 
-    if tiros_local is not None and puerta_local is not None and shots_home_quality >= 0.58:
+    if tiros_local is not None and shots_home_quality >= 0.58 and shots_total_ready is not False:
         markets.append(_build_market("SHOTS_HOME", 0.50 + ((tiros_local - LEAGUE_BASELINES["shots_home"]) / 20.0), odds.get("shots_home"), implied_prob(odds.get("shots_home")), structural_quality, shots_home_quality, home_name, away_name))
+    if puerta_local is not None and shots_home_quality >= 0.58 and shots_on_target_ready is not False:
         markets.append(_build_market("SOT_HOME", 0.50 + ((puerta_local - LEAGUE_BASELINES["shots_on_home"]) / 8.0), odds.get("sot_home"), implied_prob(odds.get("sot_home")), structural_quality, shots_home_quality, home_name, away_name))
 
-    if tiros_visitante is not None and puerta_visitante is not None and shots_away_quality >= 0.58:
+    if tiros_visitante is not None and shots_away_quality >= 0.58 and shots_total_ready is not False:
         markets.append(_build_market("SHOTS_AWAY", 0.50 + ((tiros_visitante - LEAGUE_BASELINES["shots_away"]) / 20.0), odds.get("shots_away"), implied_prob(odds.get("shots_away")), structural_quality, shots_away_quality, home_name, away_name))
+    if puerta_visitante is not None and shots_away_quality >= 0.58 and shots_on_target_ready is not False:
         markets.append(_build_market("SOT_AWAY", 0.50 + ((puerta_visitante - LEAGUE_BASELINES["shots_on_away"]) / 8.0), odds.get("sot_away"), implied_prob(odds.get("sot_away")), structural_quality, shots_away_quality, home_name, away_name))
 
     best = _select_primary_bet(markets)
@@ -1291,4 +1346,11 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         "stake_sugerido_unidades": _stake_units(confianza, best["stability"], best["edge"], best["code"]),
         "market_stability": round(best["stability"], 4),
         "market_reliability": round(best["reliability"], 4),
+        "goals_ready": goals_ready,
+        "publish_value_allowed": publish_value_allowed,
+        "corners_ready": corners_ready,
+        "cards_ready": cards_ready,
+        "shots_total_ready": shots_total_ready,
+        "shots_on_target_ready": shots_on_target_ready,
+        "market_blocking_reasons": market_blocking_reasons,
     }
