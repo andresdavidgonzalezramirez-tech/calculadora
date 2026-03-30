@@ -620,6 +620,17 @@ def _extract_threshold_odd(raw: Any) -> Dict[str, Optional[float]]:
     return out
 
 
+def _prefix_threshold_keys(raw: Dict[str, Optional[float]], prefix: str) -> Dict[str, Optional[float]]:
+    out: Dict[str, Optional[float]] = {}
+    safe_prefix = str(prefix or "").strip().lower()
+    if not safe_prefix:
+        return out
+    for key, value in raw.items():
+        norm_key = str(key or "").strip().lower().replace(".", "_")
+        out[f"{safe_prefix}_{norm_key}"] = value
+    return out
+
+
 def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
     sources = []
     flat: Dict[str, Any] = {}
@@ -634,8 +645,10 @@ def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
 
             if isinstance(goals, dict):
                 flat.update(goals)
-            flat.update(_extract_threshold_odd(corners))
-            flat.update(_extract_threshold_odd(cards))
+            if isinstance(corners, dict):
+                flat.update(_prefix_threshold_keys(_extract_threshold_odd(corners), "corners"))
+            if isinstance(cards, dict):
+                flat.update(_prefix_threshold_keys(_extract_threshold_odd(cards), "cards"))
 
             home_shots = _nested(odds_obj, ["totals", "shots", "home_first_over", "odd"])
             away_shots = _nested(odds_obj, ["totals", "shots", "away_first_over", "odd"])
@@ -686,11 +699,11 @@ def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
         "dc_1x": _pick_odds(flat, "double_chance_1x", "dc_1x", "1x", "doublechance_1x"),
         "dc_x2": _pick_odds(flat, "double_chance_x2", "dc_x2", "x2", "doublechance_x2"),
         "dc_12": _pick_odds(flat, "double_chance_12", "dc_12", "12", "doublechance_12"),
-        "over75_corners": _pick_odds(flat, "over75_corners", "over_7_5", "corners_over_7_5", "over_7_5_corners", "total_corners_over_7_5"),
-        "over85_corners": _pick_odds(flat, "over85_corners", "over_8_5", "corners_over_8_5", "over_8_5_corners", "total_corners_over_8_5"),
-        "over95_corners": _pick_odds(flat, "over95_corners", "over_9_5", "corners_over_9_5", "over_9_5_corners", "total_corners_over_9_5"),
-        "over35_cards": _pick_odds(flat, "over35_cards", "over_3_5", "cards_over_3_5", "over_3_5_cards", "total_cards_over_3_5"),
-        "over45_cards": _pick_odds(flat, "over45_cards", "over_4_5", "cards_over_4_5", "over_4_5_cards", "total_cards_over_4_5"),
+        "over75_corners": _pick_odds(flat, "over75_corners", "corners_over_7_5", "over_7_5_corners", "total_corners_over_7_5"),
+        "over85_corners": _pick_odds(flat, "over85_corners", "corners_over_8_5", "over_8_5_corners", "total_corners_over_8_5"),
+        "over95_corners": _pick_odds(flat, "over95_corners", "corners_over_9_5", "over_9_5_corners", "total_corners_over_9_5"),
+        "over35_cards": _pick_odds(flat, "over35_cards", "cards_over_3_5", "over_3_5_cards", "total_cards_over_3_5"),
+        "over45_cards": _pick_odds(flat, "over45_cards", "cards_over_4_5", "over_4_5_cards", "total_cards_over_4_5"),
         "shots_home": _pick_odds(flat, "shots_home", "home_shots_over"),
         "shots_away": _pick_odds(flat, "shots_away", "away_shots_over"),
         "sot_home": _pick_odds(flat, "sot_home", "home_shots_on_target_over"),
