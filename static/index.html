@@ -3,29 +3,49 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Panel de Apuestas</title>
+    <title>Radar de Value Betting</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <main class="container">
-      <h1>Panel de Apuestas</h1>
-      <p>Backend y panel funcionando en una sola app.</p>
+      <header class="hero">
+        <h1>Radar cuantitativo de oportunidades</h1>
+        <p id="status">Cargando datos del backend...</p>
+      </header>
 
       <section>
-        <h2>Resumen</h2>
-        <pre id="resumen">Cargando...</pre>
+        <h2>Top oportunidades del día (EV+)</h2>
+        <div id="top-opportunities" class="opportunity-grid"></div>
       </section>
 
       <section>
-        <h2>Apuestas fuertes</h2>
-        <pre id="apuestas">Cargando...</pre>
+        <h2>Próximas oportunidades EV+</h2>
+        <div id="future-opportunities" class="opportunity-grid"></div>
       </section>
 
       <section>
-        <h2>Partidos</h2>
-        <pre id="partidos">Cargando...</pre>
+        <h2>Mercados secundarios con valor</h2>
+        <div id="secondary-opportunities" class="opportunity-grid"></div>
+      </section>
+
+      <section>
+        <h2>Radar por partido</h2>
+        <div id="match-radar" class="match-list"></div>
       </section>
     </main>
+
+    <template id="opportunity-template">
+      <article class="opportunity-card">
+        <div class="card-top">
+          <strong class="market-code"></strong>
+          <span class="market-group"></span>
+        </div>
+        <p class="play"></p>
+        <p class="meta"></p>
+        <p class="metrics"></p>
+        <p class="reason"></p>
+      </article>
+    </template>
 
     <script src="/static/app.js"></script>
   </body>
