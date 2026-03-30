@@ -66,3 +66,8 @@ summary { cursor: pointer; font-weight: 600; color: #cfe0ff; }
 .notices-panel { padding: 10px 14px; }
 .filter-notices { display: grid; gap: 8px; }
 .filter-notice { margin: 0; padding: 8px 10px; border: 1px solid #37518a; border-radius: 10px; background: rgba(17, 35, 74, .6); color: #c4dbff; font-size: 13px; }
+.subsection-title { margin: 12px 0 8px; color: #9ec4ff; font-size: 0.9rem; letter-spacing: .02em; }
+.incomplete-grid .opportunity-card { border-style: dashed; opacity: 0.92; }
+.badge.incomplete { color: #ffdf9f; border-color: #8f6e31; }
+.metric-odds { display: inline-block; padding: 3px 8px; border-radius: 8px; border: 1px solid #3f658d; background: rgba(27, 51, 93, .55); }
+.metric-odds strong { font-size: 13px; color: var(--neon); }

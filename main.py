@@ -664,7 +664,7 @@ def classify_market_family(*aliases: Any) -> str:
     token = " ".join(str(v or "") for v in aliases).upper()
     token = token.replace("-", " ").replace("/", " ").replace("_", " ")
 
-    if any(k in token for k in ["CORNERS", "CORNERS", "CORNER", "SAQUES DE ESQUINA"]):
+    if any(k in token for k in ["CORNERS", "CORNER", "SAQUES DE ESQUINA"]):
         return "corners"
     if any(k in token for k in ["CARDS", "CARD", "TARJET", "AMARILLA", "ROJA"]):
         return "cards"
@@ -691,11 +691,15 @@ def build_market_telemetry(serialized: Dict[str, Any], latest_odds: Optional[Odd
     def add_market(code: str, market: str, pick: Optional[str], model_prob: Optional[float], odds: Optional[float], edge: Optional[float], ev: Optional[float], source: str, subtype: Optional[str] = None) -> None:
         implied_prob = safe_ratio(1.0, odds) if odds and odds > 1 else None
         delta_prob = (model_prob - implied_prob) if (model_prob is not None and implied_prob is not None) else None
+        resolved_edge = edge if edge is not None else delta_prob
+        resolved_ev = ev if ev is not None else ((odds * model_prob - 1.0) if (odds is not None and model_prob is not None) else None)
         family = classify_market_family(code, market, subtype, serialized.get("mercado_principal"), serialized.get("market_code"), serialized.get("market"), serialized.get("market_name"))
         rank = num_or_none(serialized.get("confianza"))
         score = num_or_none(serialized.get("prob_apuesta"))
-        value = bool(serialized.get("es_value_bet")) if ev is not None else None
-        strong = bool(serialized.get("strong_count", 0) > 0) if ev is not None else None
+        value = bool(serialized.get("es_value_bet")) if resolved_ev is not None else None
+        strong = bool(serialized.get("strong_count", 0) > 0) if resolved_ev is not None else None
+        market_complete = all(v is not None for v in [odds, model_prob, implied_prob, resolved_edge, resolved_ev])
+        completeness_reason = None if market_complete else "mercado_detectado_sin_pricing_completo"
         market_rows.append({
             "code": code,
             "family": family,
@@ -706,16 +710,20 @@ def build_market_telemetry(serialized: Dict[str, Any], latest_odds: Optional[Odd
             "model_prob": num_or_none(model_prob, 6),
             "implied_prob": num_or_none(implied_prob, 6),
             "delta_prob": num_or_none(delta_prob, 6),
-            "edge": num_or_none(edge, 6),
-            "ev": num_or_none(ev, 6),
+            "edge": num_or_none(resolved_edge, 6),
+            "ev": num_or_none(resolved_ev, 6),
             "rank": rank,
             "score": score,
             "stake": num_or_none(serialized.get("stake_sugerido_unidades"), 4),
             "source": source,
-            "reason_inclusion": "evaluado_por_modelo",
+            "reason_inclusion": "evaluado_por_modelo" if market_complete else "mercado_detectado",
+            "inclusion_reason": "evaluado_por_modelo" if market_complete else "mercado_detectado",
             "reason_discard": None,
+            "discard_reason": None,
+            "market_complete": market_complete,
+            "completeness_reason": completeness_reason,
             "flags": {
-                "ev_plus": bool(ev is not None and ev > 0),
+                "ev_plus": bool(resolved_ev is not None and resolved_ev > 0),
                 "value": value,
                 "no_value": bool(value is False),
                 "strong_signal": strong,
