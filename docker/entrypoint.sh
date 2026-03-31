@@ -4,6 +4,7 @@ set -euo pipefail
 APP_HOST="${APP_HOST:-0.0.0.0}"
 APP_PORT="${APP_PORT:-8000}"
 DB_WAIT_TIMEOUT="${DB_WAIT_TIMEOUT:-45}"
+APP_MODULE="${APP_MODULE:-main:app}"
 
 python - <<'PY'
 import os
@@ -33,4 +34,4 @@ init_db()
 print("DB lista y esquema inicializado")
 PY
 
-exec uvicorn main:app --host "$APP_HOST" --port "$APP_PORT"
+exec uvicorn "$APP_MODULE" --host "$APP_HOST" --port "$APP_PORT" --proxy-headers --no-server-header
