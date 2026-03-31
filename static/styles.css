@@ -71,3 +71,16 @@ summary { cursor: pointer; font-weight: 600; color: #cfe0ff; }
 .badge.incomplete { color: #ffdf9f; border-color: #8f6e31; }
 .metric-odds { display: inline-block; padding: 3px 8px; border-radius: 8px; border: 1px solid #3f658d; background: rgba(27, 51, 93, .55); }
 .metric-odds strong { font-size: 13px; color: var(--neon); }
+
+
+.probability-main { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.probability-number { font-size: 1.8rem; font-weight: 800; color: var(--good); letter-spacing: .01em; }
+.probability-tier { border-radius: 999px; padding: 4px 9px; font-size: 11px; font-weight: 700; border: 1px solid transparent; }
+.probability-tier.risk-very-high { background: rgba(81,255,193,.2); color: #b7ffe4; border-color: #52d9ad; }
+.probability-tier.risk-high { background: rgba(120,230,255,.18); color: #d3f7ff; border-color: #58cde8; }
+.probability-tier.risk-medium { background: rgba(255,210,123,.16); color: #ffe2af; border-color: #d0a04e; }
+.probability-tier.risk-highest { background: rgba(255,131,176,.2); color: #ffd0e2; border-color: #bf5f83; }
+.probability-sub { color: var(--muted); font-size: 12px; }
+
+.badge.high-risk { color: #ffd0e0; border-color: #ad4c73; }
+.badge.preferred { color: #c9ffe9; border-color: #2f9d78; background: rgba(47,157,120,.16); }

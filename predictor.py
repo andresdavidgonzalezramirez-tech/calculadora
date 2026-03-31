@@ -73,6 +73,50 @@ STABLE_MARKET_PRIORITY = {
     "O35_CARDS": 1.12,
 }
 
+PROBABILITY_FLOORS = {
+    "strict": 0.64,
+    "high": 0.60,
+    "medium": 0.56,
+}
+MAX_ACCEPTABLE_VOLATILITY = 0.55
+CONSERVATIVE_MIN_MODEL_PROB = 0.62
+CONSERVATIVE_MIN_CLOSE_PROB = 0.66
+ULTRA_MIN_MODEL_PROB = 0.68
+ULTRA_MIN_CLOSE_PROB = 0.72
+GENERAL_MAX_ODDS = 2.20
+MARKET_MAX_ODDS = {
+    "1X2_HOME": 2.05,
+    "1X2_DRAW": 3.20,
+    "1X2_AWAY": 2.10,
+    "DC_1X": 1.70,
+    "DC_X2": 1.75,
+    "DC_12": 1.78,
+    "OVER15": 1.80,
+    "OVER25": 2.00,
+    "OVER35": 2.25,
+    "UNDER45": 1.80,
+    "BTTS_YES": 2.00,
+    "O75_CORNERS": 1.95,
+    "O85_CORNERS": 2.10,
+    "O95_CORNERS": 2.25,
+    "O35_CARDS": 1.95,
+    "O45_CARDS": 2.10,
+    "CORNERS_HOME_OVER_3_5": 1.95,
+    "CORNERS_HOME_OVER_4_5": 2.10,
+    "CORNERS_AWAY_OVER_3_5": 2.00,
+    "CORNERS_AWAY_OVER_4_5": 2.15,
+    "CARDS_HOME_OVER_1_5": 1.95,
+    "CARDS_HOME_OVER_2_5": 2.10,
+    "CARDS_AWAY_OVER_1_5": 1.95,
+    "CARDS_AWAY_OVER_2_5": 2.10,
+    "TEAM_HOME_SCORE_YES": 1.85,
+    "TEAM_AWAY_SCORE_YES": 2.00,
+    "TEAM_HOME_OVER_0_5": 1.75,
+    "TEAM_HOME_OVER_1_5": 2.15,
+    "TEAM_AWAY_OVER_0_5": 1.90,
+    "TEAM_AWAY_OVER_1_5": 2.25,
+}
+
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
@@ -900,13 +944,30 @@ def _build_market(
     has_odds = odd is not None and pricing["probabilidad_implicita"] is not None
     signal_tier = _signal_bucket(pricing["edge"], prob, stability, reliability, has_odds)
 
+    odd_penalty = 0.0
+    if odd is not None:
+        odd_penalty = _clamp((odd - 1.62) * 0.09, 0.0, 0.30)
+
+    fragility = _clamp(volatility * 0.60 + (1.0 - data_quality) * 0.40, 0.0, 1.0)
+    close_probability = _clamp(
+        prob * 0.60
+        + reliability * 0.20
+        + stability * 0.15
+        + data_quality * 0.05
+        - odd_penalty * 0.10,
+        0.01,
+        0.99,
+    )
+
     score = (
-        prob * 0.34
-        + max(pricing["edge"], -0.01) * 2.15
-        + data_quality * 0.18
-        + reliability * 0.16
-        + stability * 0.14
-        + (0.08 if signal_tier in {"strong_value", "medium_value"} else 0.04 if signal_tier in {"low_value", "lean", "model_strong"} else 0.0)
+        close_probability * 0.56
+        + reliability * 0.17
+        + stability * 0.15
+        + data_quality * 0.10
+        + _family_preference_boost(code)
+        + max(min(pricing["edge"], 0.02), -0.012) * 0.04
+        - odd_penalty * 0.20
+        - fragility * 0.08
     ) * ease_bonus
 
     return {
@@ -928,6 +989,9 @@ def _build_market(
         "data_quality": data_quality,
         "signal_tier": signal_tier,
         "score": score,
+        "close_probability": close_probability,
+        "volatility": volatility,
+        "fragility": fragility,
         "line": line,
     }
 
@@ -937,6 +1001,48 @@ def _infer_dynamic_line(metric: Optional[float], low: float, high: float, defaul
         return default
     proposal = round((metric - 0.8) * 2.0) / 2.0
     return _clamp(proposal, low, high)
+
+
+def _max_odds_for_market(code: str) -> float:
+    return min(GENERAL_MAX_ODDS, MARKET_MAX_ODDS.get(code, GENERAL_MAX_ODDS))
+
+
+def _is_conservative_candidate(item: Dict[str, Any], ultra: bool = False) -> Tuple[bool, str]:
+    model_floor = ULTRA_MIN_MODEL_PROB if ultra else CONSERVATIVE_MIN_MODEL_PROB
+    close_floor = ULTRA_MIN_CLOSE_PROB if ultra else CONSERVATIVE_MIN_CLOSE_PROB
+
+    if item.get("prob", 0.0) < model_floor:
+        return False, "probability_too_low"
+    if item.get("close_probability", 0.0) < close_floor:
+        return False, "close_probability_too_low"
+    if item.get("reliability", 0.0) < (0.76 if ultra else 0.72):
+        return False, "reliability_too_low"
+    if item.get("stability", 0.0) < (0.52 if ultra else 0.48):
+        return False, "stability_too_low"
+    if item.get("volatility", 1.0) > (0.42 if ultra else 0.50):
+        return False, "volatility_too_high"
+    if item.get("fragility", 1.0) > (0.48 if ultra else 0.54):
+        return False, "fragility_too_high"
+    if item.get("data_quality", 0.0) < (0.62 if ultra else 0.55):
+        return False, "data_quality_too_low"
+
+    odds = item.get("cuota")
+    if odds is None:
+        return False, "missing_pricing"
+    if odds > _max_odds_for_market(str(item.get("code", ""))):
+        return False, "odds_too_high"
+
+    return True, "ok"
+
+
+def _family_preference_boost(code: str) -> float:
+    if code.startswith("CORNERS_") or code.startswith("O7") or code.startswith("O8") or code.startswith("O9"):
+        return 0.020
+    if code.startswith("CARDS_") or code.startswith("O3") or code.startswith("O4"):
+        return 0.018
+    if code.startswith("TEAM_"):
+        return 0.010
+    return 0.0
 
 
 def _select_primary_bet(markets: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -958,27 +1064,40 @@ def _select_primary_bet(markets: List[Dict[str, Any]]) -> Dict[str, Any]:
             "data_quality": 0.50,
             "signal_tier": "watch",
             "score": 0.50,
+            "close_probability": 0.50,
+            "volatility": 0.50,
+            "fragility": 0.50,
         }
 
-    priority = {
-        "strong_value": 5,
-        "medium_value": 4,
-        "low_value": 3,
-        "lean": 2,
-        "model_strong": 2,
-        "model": 1,
-        "watch": 0,
-    }
+    eligible = [m for m in markets if _is_conservative_candidate(m, ultra=False)[0]]
+    ultra_eligible = [m for m in markets if _is_conservative_candidate(m, ultra=True)[0]]
 
+    if ultra_eligible:
+        pool = ultra_eligible
+    elif eligible:
+        pool = eligible
+    else:
+        pool = []
+
+    if not pool:
+        best_fallback = max(
+            markets,
+            key=lambda item: (item.get("close_probability", 0.0), item.get("prob", 0.0), item.get("reliability", 0.0), item.get("stability", 0.0)),
+        )
+        best_fallback["signal_tier"] = "no_bet"
+        best_fallback["selection_status"] = "NO_BET"
+        best_fallback["selection_reason"] = "no_market_passed_conservative_filters"
+        return best_fallback
     return max(
-        markets,
+        pool,
         key=lambda item: (
-            priority.get(item.get("signal_tier", "watch"), 0),
-            1.0 if item.get("cuota") is not None else 0.0,
-            item["score"],
-            item["stability"],
-            item["reliability"],
-            item["prob"],
+            item.get("close_probability", 0.0),
+            item.get("prob", 0.0),
+            item.get("reliability", 0.0),
+            item.get("stability", 0.0),
+            -item.get("volatility", 1.0),
+            item.get("score", 0.0),
+            max(min(item.get("edge", 0.0), 0.02), -0.02),
         ),
     )
 
@@ -987,43 +1106,55 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ordered = sorted(
         markets,
         key=lambda item: (
-            {"strong_value": 5, "medium_value": 4, "low_value": 3, "lean": 2, "model_strong": 2, "model": 1, "watch": 0}.get(item.get("signal_tier", "watch"), 0),
-            item["score"],
-            item["stability"],
-            item["prob"],
+            item.get("close_probability", 0.0),
+            item.get("prob", 0.0),
+            item.get("reliability", 0.0),
+            item.get("stability", 0.0),
+            -item.get("volatility", 1.0),
+            item.get("score", 0.0),
+            max(min(item.get("edge", 0.0), 0.02), -0.02),
         ),
         reverse=True,
     )
 
     out: List[Dict[str, Any]] = []
     for item in ordered:
-        bucket = item.get("signal_tier", "watch")
-        include = bucket in {"strong_value", "medium_value", "low_value", "lean", "model_strong"}
-        if not include:
+        is_ok, reason = _is_conservative_candidate(item, ultra=False)
+        if not is_ok:
             continue
+
+        close_prob = item.get("close_probability", 0.0)
+        if close_prob >= 0.74:
+            prob_class = "Muy alta probabilidad"
+        elif close_prob >= 0.66:
+            prob_class = "Alta probabilidad"
+        elif close_prob >= 0.58:
+            prob_class = "Probabilidad media"
+        else:
+            prob_class = "Riesgo alto"
 
         out.append(
             {
                 "mercado": item["mercado"],
                 "jugada": item["jugada"],
                 "probabilidad": int(round(item["prob"] * 100)),
+                "probabilidad_cierre": int(round(close_prob * 100)),
+                "probabilidad_nivel": prob_class,
                 "cuota": round(item["cuota"], 2) if item["cuota"] else None,
                 "edge": round(item["edge"] * 100, 2),
                 "value": bool(item["es_value_bet"] or item.get("soft_value")),
-                "signal_tier": bucket,
-                "signal_label": {
-                    "strong_value": "Strong value",
-                    "medium_value": "Medium value",
-                    "low_value": "Low value",
-                    "lean": "Lean",
-                    "model_strong": "Modelo",
-                }.get(bucket, "Seguimiento"),
+                "signal_tier": item.get("signal_tier", "watch"),
+                "signal_label": prob_class,
                 "posible_error_cuota": bool(item["posible_error_cuota"]),
                 "cuota_sospechosa": bool(item["cuota_sospechosa"]),
                 "oportunidad_detectada": bool(item["oportunidad_detectada"]),
                 "stability": round(item["stability"], 4),
                 "reliability": round(item["reliability"], 4),
+                "volatility": round(item.get("volatility", 0.0), 4),
+                "fragility": round(item.get("fragility", 0.0), 4),
                 "score": round(item["score"], 4),
+                "selection_status": "RECOMMENDED",
+                "selection_reason": "passed_conservative_filters",
             }
         )
         if len(out) >= 6:
@@ -1039,6 +1170,8 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "mercado": item["mercado"],
                 "jugada": item["jugada"],
                 "probabilidad": int(round(item["prob"] * 100)),
+                "probabilidad_cierre": int(round(item.get("close_probability", item["prob"]) * 100)),
+                "probabilidad_nivel": "Probabilidad media",
                 "cuota": round(item["cuota"], 2) if item["cuota"] else None,
                 "edge": round(item["edge"] * 100, 2),
                 "value": bool(item["es_value_bet"] or item.get("soft_value")),
@@ -1049,7 +1182,11 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "oportunidad_detectada": bool(item.get("oportunidad_detectada")),
                 "stability": round(item["stability"], 4),
                 "reliability": round(item["reliability"], 4),
+                "volatility": round(item.get("volatility", 0.0), 4),
+                "fragility": round(item.get("fragility", 0.0), 4),
                 "score": round(item["score"], 4),
+                "selection_status": "RECOMMENDED",
+                "selection_reason": "passed_conservative_filters",
             }
         )
     return out
@@ -1077,19 +1214,28 @@ def _alert_title(level: int) -> str:
     return "Sin alerta"
 
 
-def _stake_units(confianza: int, stability: float, edge: float, market_code: str) -> float:
-    edge_floor = max(edge, -0.01)
-    stable_bonus = 0.18 if market_code in STABLE_MARKET_PRIORITY else 0.0
-    score = (confianza / 100.0) * 0.52 + stability * 0.28 + max(edge_floor, 0.0) * 1.6 + stable_bonus
-    if edge_floor <= 0:
-        score -= 0.10
-    if score >= 1.02:
-        return 2.0
-    if score >= 0.84:
-        return 1.5
-    if score >= 0.62:
+def _stake_units(confianza: int, stability: float, edge: float, market_code: str, close_probability: float, reliability: float, fragility: float, data_quality: float) -> float:
+    conservative_score = (
+        close_probability * 0.42
+        + (confianza / 100.0) * 0.18
+        + stability * 0.15
+        + reliability * 0.14
+        + data_quality * 0.11
+        - fragility * 0.18
+        + max(min(edge, 0.02), -0.02) * 0.04
+    )
+    if market_code in STABLE_MARKET_PRIORITY:
+        conservative_score += 0.03
+
+    if close_probability < 0.66 or reliability < 0.72 or fragility > 0.54 or data_quality < 0.55:
+        return 0.0
+    if conservative_score >= 0.82 and close_probability >= 0.74:
+        return 1.25
+    if conservative_score >= 0.74 and close_probability >= 0.70:
         return 1.0
-    return 0.5
+    if conservative_score >= 0.68 and close_probability >= 0.66:
+        return 0.5
+    return 0.0
 
 
 def calcular_alerta_pricing(prediction: Dict[str, Any]) -> Dict[str, Any]:
@@ -1430,6 +1576,8 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         "puerta_visitante": round(puerta_visitante, 3) if puerta_visitante is not None else None,
         "apuesta_principal": best["jugada"],
         "mercado_principal": best["mercado"],
+        "selection_status": best.get("selection_status", "RECOMMENDED"),
+        "selection_reason": best.get("selection_reason", "passed_conservative_filters"),
         "prob_apuesta": _round_prob(best["prob"]),
         "cuota_principal": round(best["cuota"], 2) if best["cuota"] else None,
         "edge_principal": round(best["edge"], 6),
@@ -1449,7 +1597,7 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         "top_signal_tier": best.get("signal_tier", "watch"),
         "top_signal_label": top_signal_label,
         "data_quality": round(structural_quality, 4),
-        "model_version": "predictor_pro_v4_3_null_safe",
+        "model_version": "predictor_pro_v4_5_ultra_conservative",
         "market_breakdown": [
             {
                 "code": item["code"],
@@ -1467,14 +1615,20 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
                 "probabilidad_justa": round(item["probabilidad_justa"], 6) if item.get("probabilidad_justa") is not None else None,
                 "ev": round((item["cuota"] * item["prob"] - 1.0), 6) if item.get("cuota") else None,
                 "market_complete": bool(item.get("cuota") and item.get("probabilidad_implicita") is not None),
+                "close_probability": round(item.get("close_probability", item["prob"]), 6),
+                "volatility": round(item.get("volatility", 0.0), 4),
+                "fragility": round(item.get("fragility", 0.0), 4),
             }
             for item in markets
         ],
         "alert_level": _alert_level_from_best(best),
         "alert_title": _alert_title(_alert_level_from_best(best)),
-        "stake_sugerido_unidades": _stake_units(confianza, best["stability"], best["edge"], best["code"]),
+        "stake_sugerido_unidades": 0.0 if best.get("selection_status") == "NO_BET" else _stake_units(confianza, best["stability"], best["edge"], best["code"], best.get("close_probability", best["prob"]), best["reliability"], best.get("fragility", 0.5), best["data_quality"]),
         "market_stability": round(best["stability"], 4),
         "market_reliability": round(best["reliability"], 4),
+        "close_probability": round(best.get("close_probability", best["prob"]), 4),
+        "market_volatility": round(best.get("volatility", 0.0), 4),
+        "pick_fragility": round(best.get("fragility", 0.0), 4),
         "goals_ready": goals_ready,
         "publish_value_allowed": publish_value_allowed,
         "corners_ready": corners_ready,
@@ -1482,4 +1636,11 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         "shots_total_ready": shots_total_ready,
         "shots_on_target_ready": shots_on_target_ready,
         "market_blocking_reasons": market_blocking_reasons,
+        "conservative_policy": {
+            "general_max_odds": GENERAL_MAX_ODDS,
+            "min_model_prob": CONSERVATIVE_MIN_MODEL_PROB,
+            "min_close_probability": CONSERVATIVE_MIN_CLOSE_PROB,
+            "ultra_min_model_prob": ULTRA_MIN_MODEL_PROB,
+            "ultra_min_close_probability": ULTRA_MIN_CLOSE_PROB,
+        },
     }

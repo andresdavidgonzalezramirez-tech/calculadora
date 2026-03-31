@@ -14,6 +14,8 @@ const INITIAL_FILTERS = {
   quick: { only_ev: false, only_value: false, only_strong: false, secondary: false, next_matches: false, signal_heavy: false },
 };
 
+const CONSERVATIVE_MAX_ODDS = 2.2;
+
 const state = {
   matches: [],
   opportunities: [],
@@ -77,6 +79,15 @@ function fmtDecimal(value, digits = 3) {
   return n === null ? null : n.toFixed(digits);
 }
 
+function probabilityTier(prob) {
+  const p = toNumber(prob);
+  if (p === null) return { label: "Sin probabilidad", css: "risk-high" };
+  if (p >= 0.74) return { label: "Muy alta probabilidad", css: "risk-very-high" };
+  if (p >= 0.66) return { label: "Alta probabilidad", css: "risk-high" };
+  if (p >= 0.58) return { label: "Probabilidad media", css: "risk-medium" };
+  return { label: "Riesgo alto", css: "risk-highest" };
+}
+
 function inferFamily(raw = {}) {
   const token = [
     raw.family,
@@ -117,6 +128,7 @@ function normalizeOpportunity(raw) {
   const deltaProb = toNumber(raw.delta_prob);
   const edge = toNumber(raw.edge);
   const ev = toNumber(raw.ev);
+  const closeProbability = toNumber(raw.close_probability ?? raw.closeProb ?? raw.probabilidad_cierre);
 
   const normalized = {
     ...raw,
@@ -129,6 +141,7 @@ function normalizeOpportunity(raw) {
     model_prob: modelProb,
     implied_prob: impliedProb,
     delta_prob: deltaProb ?? ((modelProb !== null && impliedProb !== null) ? modelProb - impliedProb : null),
+    close_probability: closeProbability ?? modelProb,
     edge,
     ev,
     rank: toNumber(raw.rank),
@@ -159,6 +172,8 @@ function opportunityBadges(opp) {
   if (opp.flags.strong_signal) out.push('<span class="badge strong">Strong signal</span>');
   if (opp.flags.secondary_market) out.push('<span class="badge secondary">Secondary market</span>');
   if (!opp.market_complete) out.push('<span class="badge incomplete">Sin pricing completo</span>');
+  if ((opp.odds ?? 0) > CONSERVATIVE_MAX_ODDS) out.push('<span class="badge high-risk">Cuota alta</span>');
+  if (["corners", "cards"].includes(opp.family)) out.push('<span class="badge preferred">Mercado preferido</span>');
   return out.join(" ");
 }
 
@@ -172,18 +187,28 @@ function createOpportunityCard(opp) {
 
   const oddsLabel = fmtDecimal(opp.odds, 2) || "N/D";
   const modelLabel = toPercent(opp.model_prob, 1) || "N/D";
+  const closeLabel = toPercent(opp.close_probability, 1) || modelLabel;
   const impliedLabel = toPercent(opp.implied_prob, 1) || "N/D";
   const deltaLabel = toSignedPercent(opp.delta_prob, 1) || "N/D";
   const edgeLabel = toSignedPercent(opp.edge, 1) || "N/D";
   const evLabel = fmtDecimal(opp.ev, 3) || "N/D";
+  const tier = probabilityTier(opp.close_probability ?? opp.model_prob);
 
-  node.querySelector(".meta").innerHTML = `<span class="metric metric-odds">Cuota <strong>${oddsLabel}</strong></span> · Prob modelo: ${modelLabel} · Prob implícita: ${impliedLabel} · ΔProb: ${deltaLabel}`;
-  node.querySelector(".metrics").textContent = `Edge: ${edgeLabel} · EV: ${evLabel} · Rank: ${opp.rank ?? "N/D"} · Score: ${opp.score ?? "N/D"} · Stake: ${opp.stake ?? "N/D"}`;
+  node.querySelector(".meta").innerHTML = `
+    <div class="probability-main">
+      <span class="probability-number">${closeLabel}</span>
+      <span class="probability-tier ${tier.css}">${tier.label}</span>
+    </div>
+    <div class="probability-sub">Prob modelo: <strong>${modelLabel}</strong> · Prob implícita: ${impliedLabel} · ΔProb: ${deltaLabel}</div>
+  `;
+  const status = opp.selection_status || "RECOMMENDED";
+  node.querySelector(".metrics").innerHTML = `<span class="metric metric-odds">Cuota <strong>${oddsLabel}</strong></span> · Estado: ${status} · Riesgo: ${tier.label} · Edge: ${edgeLabel} · EV: ${evLabel} · Stake: ${opp.stake ?? "N/D"}`;
 
   const traceNotes = [];
   if (!opp.market_complete) traceNotes.push(opp.completeness_reason || "mercado_detectado_sin_pricing_completo");
   if (opp.reason_discard) traceNotes.push(`Descarte: ${opp.reason_discard}`);
-  node.querySelector(".trace").textContent = `Fuente: ${opp.source || "N/D"} · Inclusión: ${opp.reason_inclusion || "N/D"}${traceNotes.length ? ` · ${traceNotes.join(" · ")}` : ""}`;
+  const familyReason = ["corners", "cards"].includes(opp.family) ? " · Priorizado por mercado de alta repetibilidad" : "";
+  node.querySelector(".trace").textContent = `Fuente: ${opp.source || "N/D"} · Inclusión: ${opp.reason_inclusion || "N/D"}${familyReason}${traceNotes.length ? ` · ${traceNotes.join(" · ")}` : ""}`;
   return node;
 }
 
@@ -214,6 +239,7 @@ function applyFilters(opps, options = {}) {
     }
 
     if (!cfg.relaxNumeric) {
+      if (o.market_complete && o.odds !== null && o.odds > CONSERVATIVE_MAX_ODDS) return false;
       if (state.filters.oddsMin !== null && (o.odds === null || o.odds < state.filters.oddsMin)) return false;
       if (state.filters.oddsMax !== null && (o.odds === null || o.odds > state.filters.oddsMax)) return false;
       if (state.filters.evMin !== null && (o.ev === null || o.ev < state.filters.evMin)) return false;
@@ -233,7 +259,13 @@ function applyFilters(opps, options = {}) {
     }
 
     return true;
-  }).sort((a, b) => (b.ev ?? -999) - (a.ev ?? -999) || (b.rank ?? b.score ?? -999) - (a.rank ?? a.score ?? -999) || (b.edge ?? -999) - (a.edge ?? -999));
+  }).sort((a, b) =>
+    (b.close_probability ?? b.model_prob ?? -999) - (a.close_probability ?? a.model_prob ?? -999)
+    || (b.model_prob ?? -999) - (a.model_prob ?? -999)
+    || (b.score ?? b.rank ?? -999) - (a.score ?? a.rank ?? -999)
+    || (b.edge ?? -999) - (a.edge ?? -999)
+    || ((a.odds ?? 99) - (b.odds ?? 99))
+  );
 }
 
 function selectSectionWithFallback(primaryRows, fallbackRows, relaxedRows, opts = {}) {
