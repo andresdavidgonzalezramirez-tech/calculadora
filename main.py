@@ -77,7 +77,8 @@ HIDDEN_FIXTURE_STATUSES = {"FT", "AET", "PEN", "CANC", "ABD", "PST"}
 DISPLAY_TIMEZONE = ZoneInfo(os.getenv("DISPLAY_TIMEZONE", "Europe/Warsaw"))
 INGEST_DEFAULT_TIMEZONE = ZoneInfo(os.getenv("INGEST_DEFAULT_TIMEZONE", "Europe/Warsaw"))
 UTC_TIMEZONE = ZoneInfo("UTC")
-VISIBILITY_FALLBACK_MAX_AGE = timedelta(hours=2)
+VISIBILITY_PAST_GRACE = timedelta(hours=2)
+VISIBILITY_FUTURE_WINDOW = timedelta(hours=int(os.getenv("VISIBILITY_FUTURE_WINDOW_HOURS", "72")))
 
 
 def normalize_fixture_status(status: Optional[str]) -> Optional[str]:
@@ -111,12 +112,18 @@ def fixture_datetime_expression():
 
 
 def now_utc() -> datetime:
-    return datetime.now(UTC_TIMEZONE)
+    return datetime.now(ZoneInfo("UTC"))
 
 
 def coerce_utc_datetime(value: Optional[datetime]) -> Optional[datetime]:
     if value is None:
         return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            logger.debug("No se pudo parsear fixture datetime como ISO: %s", value)
+            return None
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC_TIMEZONE)
     return value.astimezone(UTC_TIMEZONE)
@@ -128,8 +135,11 @@ def is_fixture_visible(status: Optional[str], fixture_dt: Optional[datetime], re
         return False
 
     dt_utc = coerce_utc_datetime(fixture_dt)
-    if dt_utc is not None and dt_utc < reference_now_utc - VISIBILITY_FALLBACK_MAX_AGE:
-        return False
+    if dt_utc is not None:
+        if dt_utc < reference_now_utc - VISIBILITY_PAST_GRACE:
+            return False
+        if dt_utc > reference_now_utc + VISIBILITY_FUTURE_WINDOW:
+            return False
 
     return True
 
