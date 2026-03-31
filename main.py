@@ -64,17 +64,18 @@ if STATIC_DIR.exists():
 
 
 MARKET_FAMILY_RULES = [
-    ("1x2", ("1X2",)),
-    ("double_chance", ("DC_", "DOUBLE CHANCE", "DOBLE OPORTUNIDAD")),
-    ("goals", ("OVER", "UNDER", "TEAM_", "GOALS", "SCORE")),
-    ("btts", ("BTTS", "AMBOS")),
-    ("corners", ("CORNER",)),
-    ("cards", ("CARD", "TARJET")),
-    ("shots_on_target", ("SOT", "SHOTS ON TARGET", "TIROS A PUERTA")),
-    ("shots", ("SHOT", "TIRO")),
-    ("fouls", ("FOUL", "FALTA")),
-    ("offsides", ("OFFSIDE", "FUERA DE JUEGO")),
+    ("Double chance", ("DC_", "DOUBLE CHANCE", "DOBLE OPORTUNIDAD")),
+    ("Shots on target", ("SOT", "SHOTS ON TARGET", "TIROS A PUERTA")),
+    ("Corners", ("CORNER",)),
+    ("Cards", ("CARD", "TARJET")),
+    ("Shots", ("SHOT", "TIRO")),
+    ("Fouls", ("FOUL", "FALTA")),
+    ("Offsides", ("OFFSIDE", "FUERA DE JUEGO")),
+    ("BTTS", ("BTTS", "AMBOS")),
+    ("1X2", ("1X2",)),
+    ("Goals", ("OVER", "UNDER", "TEAM_", "GOALS", "SCORE")),
 ]
+SECONDARY_FAMILIES = {"Corners", "Cards", "Shots", "Secondary"}
 MIN_MODEL_PROBABILITY = float(os.getenv("MIN_MODEL_PROBABILITY", "0.60"))
 
 VISIBLE_FIXTURE_STATUSES = {"NS"}
@@ -157,12 +158,12 @@ def is_fixture_visible(status: Optional[str], fixture_dt: Optional[datetime], re
 
 
 
-def infer_market_family(code: Optional[str], market: Optional[str]) -> str:
-    token = f"{code or ''} {market or ''}".upper()
+def infer_market_family(code: Optional[str], market: Optional[str], family: Optional[str] = None) -> str:
+    token = f"{family or ''} {code or ''} {market or ''}".upper()
     for family, keywords in MARKET_FAMILY_RULES:
         if any(keyword in token for keyword in keywords):
             return family
-    return "secondary"
+    return "Secondary"
 
 
 def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any]:
@@ -197,7 +198,7 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
             edge = num_or_none(item.get("edge"), 6)
             ev = num_or_none(item.get("ev"), 6)
             market_complete = bool(item.get("market_complete") and model_prob is not None and odds is not None and implied_prob is not None)
-            family = infer_market_family(item.get("code"), item.get("mercado"))
+            family = infer_market_family(item.get("code"), item.get("mercado"), item.get("family"))
             detected_families.add(family)
 
             opportunity = {
@@ -224,7 +225,7 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                     "ev_plus": bool(ev is not None and ev > 0),
                     "value": bool(item.get("value") or (edge is not None and edge > 0)),
                     "strong_signal": str(item.get("signal_tier") or "").startswith("strong"),
-                    "secondary_market": family in {"corners", "cards", "shots", "secondary"},
+                    "secondary_market": family in SECONDARY_FAMILIES,
                 },
                 "source": "market_breakdown",
                 "reason_inclusion": "market_breakdown",

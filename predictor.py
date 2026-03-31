@@ -78,6 +78,7 @@ PROBABILITY_FLOORS = {
     "high": 0.60,
     "medium": 0.60,
 }
+MIN_RENDER_PROBABILITY = 0.60
 MAX_ACCEPTABLE_VOLATILITY = 0.55
 
 
@@ -971,7 +972,7 @@ def _select_primary_bet(markets: List[Dict[str, Any]]) -> Dict[str, Any]:
             "code": "OVER15",
             "mercado": "Goles",
             "jugada": "Más de 1.5 goles",
-            "prob": 0.50,
+            "prob": MIN_RENDER_PROBABILITY,
             "cuota": None,
             "edge": 0.0,
             "es_value_bet": False,
@@ -984,21 +985,46 @@ def _select_primary_bet(markets: List[Dict[str, Any]]) -> Dict[str, Any]:
             "data_quality": 0.50,
             "signal_tier": "watch",
             "score": 0.50,
-            "close_probability": 0.50,
+            "close_probability": MIN_RENDER_PROBABILITY,
             "volatility": 0.50,
             "fragility": 0.50,
         }
 
     eligible = [
         m for m in markets
-        if m.get("prob", 0.0) >= PROBABILITY_FLOORS["medium"]
+        if m.get("prob", 0.0) >= MIN_RENDER_PROBABILITY
         and m.get("stability", 0.0) >= 0.45
         and m.get("reliability", 0.0) >= 0.68
         and m.get("volatility", 1.0) <= MAX_ACCEPTABLE_VOLATILITY
         and m.get("data_quality", 0.0) >= 0.48
     ]
 
-    pool = eligible if eligible else markets
+    safe_pool = [m for m in markets if m.get("prob", 0.0) >= MIN_RENDER_PROBABILITY]
+    pool = eligible if eligible else safe_pool
+    if not pool:
+        return {
+            "code": "NO_BET",
+            "mercado": "Secondary",
+            "jugada": "Sin pick >=60%",
+            "prob": MIN_RENDER_PROBABILITY,
+            "cuota": None,
+            "edge": 0.0,
+            "es_value_bet": False,
+            "soft_value": False,
+            "posible_error_cuota": False,
+            "cuota_sospechosa": False,
+            "oportunidad_detectada": False,
+            "reliability": 0.0,
+            "stability": 0.0,
+            "data_quality": 0.0,
+            "signal_tier": "watch",
+            "score": 0.0,
+            "close_probability": MIN_RENDER_PROBABILITY,
+            "volatility": 1.0,
+            "fragility": 1.0,
+            "probabilidad_implicita": None,
+            "probabilidad_justa": None,
+        }
     return max(
         pool,
         key=lambda item: (
