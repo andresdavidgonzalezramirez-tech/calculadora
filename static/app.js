@@ -37,17 +37,17 @@ const KPI_CONFIG = [
 ];
 
 const FAMILY_LABELS = {
-  "1x2": "1X2",
-  double_chance: "Double chance",
-  goals: "Goals",
-  btts: "BTTS",
-  corners: "Corners",
-  cards: "Cards",
-  shots: "Shots",
-  shots_on_target: "Shots on target",
-  fouls: "Fouls",
-  offsides: "Offsides",
-  secondary: "Secondary",
+  "1X2": "1X2",
+  "Goals": "Goals",
+  "BTTS": "BTTS",
+  "Corners": "Corners",
+  "Cards": "Cards",
+  "Shots": "Shots",
+  "Shots on target": "Shots on target",
+  "Fouls": "Fouls",
+  "Offsides": "Offsides",
+  "Double chance": "Double chance",
+  "Secondary": "Secondary",
 };
 const MIN_MODEL_PROBABILITY = 0.6;
 const SCHEDULED_FIXTURE_STATUSES = new Set(["NS"]);
@@ -107,18 +107,17 @@ function inferFamily(raw = {}) {
     raw.jugada,
   ].map((v) => String(v || "").toUpperCase()).join(" ");
 
-  if (["DOUBLE CHANCE", "DOBLE OPORTUNIDAD", " DC_", " DC "].some((k) => token.includes(k))) return "double_chance";
-  if (["CORNER", "CORNERS", "SAQUES DE ESQUINA"].some((k) => token.includes(k))) return "corners";
-  if (["CARD", "CARDS", "TARJET", "AMARILLA", "ROJA"].some((k) => token.includes(k))) return "cards";
-  if (["SHOTS ON TARGET", "SOT", "TIROS A PUERTA", "PUERTA"].some((k) => token.includes(k))) return "shots_on_target";
-  if (["SHOT", "SHOTS", "TIROS", "REMATES"].some((k) => token.includes(k))) return "shots";
-  if (["FOUL", "FOULS", "FALTAS"].some((k) => token.includes(k))) return "fouls";
-  if (["OFFSIDE", "OFFSIDES", "FUERA DE JUEGO"].some((k) => token.includes(k))) return "offsides";
-  if (["TEAM", "MARCARA", "SCORE YES", "GOLES EQUIPO"].some((k) => token.includes(k))) return "goals";
-  if (["BTTS", "AMBOS MARCAN", "BOTH TEAMS TO SCORE"].some((k) => token.includes(k))) return "btts";
-  if (["1X2", "DC", "DOUBLE CHANCE", "DRAW", "EMPATE"].some((k) => token.includes(k))) return "1x2";
-  if (["GOALS", "GOLES", "OVER", "UNDER", "TOTAL"].some((k) => token.includes(k))) return "goals";
-  return "secondary";
+  if (["DOUBLE CHANCE", "DOBLE OPORTUNIDAD", " DC_", " DC "].some((k) => token.includes(k))) return "Double chance";
+  if (["SHOTS ON TARGET", "SOT", "TIROS A PUERTA", "PUERTA"].some((k) => token.includes(k))) return "Shots on target";
+  if (["CORNER", "CORNERS", "SAQUES DE ESQUINA"].some((k) => token.includes(k))) return "Corners";
+  if (["CARD", "CARDS", "TARJET", "AMARILLA", "ROJA"].some((k) => token.includes(k))) return "Cards";
+  if (["SHOT", "SHOTS", "TIROS", "REMATES"].some((k) => token.includes(k))) return "Shots";
+  if (["FOUL", "FOULS", "FALTAS"].some((k) => token.includes(k))) return "Fouls";
+  if (["OFFSIDE", "OFFSIDES", "FUERA DE JUEGO"].some((k) => token.includes(k))) return "Offsides";
+  if (["BTTS", "AMBOS MARCAN", "BOTH TEAMS TO SCORE"].some((k) => token.includes(k))) return "BTTS";
+  if (["1X2", "DRAW", "EMPATE"].some((k) => token.includes(k))) return "1X2";
+  if (["TEAM", "MARCARA", "SCORE YES", "GOLES EQUIPO", "GOALS", "GOLES", "OVER", "UNDER", "TOTAL"].some((k) => token.includes(k))) return "Goals";
+  return "Secondary";
 }
 
 function isCompleteOpportunity(opp) {
@@ -165,7 +164,7 @@ function normalizeOpportunity(raw) {
       value: Boolean(flags.value),
       no_value: Boolean(flags.no_value),
       strong_signal: Boolean(flags.strong_signal),
-      secondary_market: Boolean(flags.secondary_market ?? ["corners", "cards", "shots", "secondary"].includes(family)),
+      secondary_market: Boolean(flags.secondary_market ?? ["Corners", "Cards", "Shots", "Secondary"].includes(family)),
     },
   };
   normalized.market_complete = isCompleteOpportunity(normalized);
@@ -223,8 +222,9 @@ function createOpportunityCard(opp) {
 function renderOpportunityList(containerId, opportunities, emptyText) {
   const container = q(containerId);
   container.innerHTML = "";
-  if (!opportunities.length) return (container.innerHTML = `<p class="empty">${emptyText}</p>`);
-  opportunities.forEach((o) => container.appendChild(createOpportunityCard(o)));
+  const safeRows = opportunities.filter((o) => o.model_prob === null || o.model_prob >= MIN_MODEL_PROBABILITY);
+  if (!safeRows.length) return (container.innerHTML = `<p class="empty">${emptyText}</p>`);
+  safeRows.forEach((o) => container.appendChild(createOpportunityCard(o)));
 }
 
 function applyFilters(opps, options = {}) {
@@ -276,6 +276,7 @@ function applyFilters(opps, options = {}) {
 }
 
 function selectSectionWithFallback(primaryRows, fallbackRows, relaxedRows, opts = {}) {
+  if (state.filters.family) return { rows: primaryRows, notice: primaryRows.length ? null : (opts.emptyNotice || null) };
   if (primaryRows.length) return { rows: primaryRows, notice: null };
   if (fallbackRows.length) return { rows: fallbackRows, notice: opts.familyNotice || "No hay resultados para esta familia con los filtros activos. Mostrando oportunidades generales." };
   if (relaxedRows.length) return { rows: relaxedRows, notice: "Filtros demasiado restrictivos. Se relajaron EV/edge/quick para evitar panel vacío." };
@@ -339,8 +340,8 @@ function renderMatchRadar(radarRows) {
   radarRows.forEach((row) => {
     const card = document.createElement("article");
     card.className = "match-card";
-    const included = (row.oportunidades_incluidas || []).map(normalizeOpportunity);
-    const excluded = (row.oportunidades_excluidas || []).map(normalizeOpportunity);
+    const included = (row.oportunidades_incluidas || []).map(normalizeOpportunity).filter((o) => o.model_prob === null || o.model_prob >= MIN_MODEL_PROBABILITY);
+    const excluded = (row.oportunidades_excluidas || []).map(normalizeOpportunity).filter((o) => o.model_prob === null || o.model_prob >= MIN_MODEL_PROBABILITY);
     card.innerHTML = `<div class="match-head"><strong>${row.equipos?.local || "Local"} vs ${row.equipos?.visitante || "Visitante"}</strong><span>${row.liga || "N/D"} · ${row.pais || "N/D"}</span><span>${dateLabel(row.hora)} · ${countdownLabel(row.hora, row.fixture_status_current || row.estado)}</span><span>Familias: ${(row.familias_detectadas || []).join(", ") || "N/D"}</span></div>`;
 
     const details = document.createElement("details");
@@ -505,7 +506,7 @@ function bindFilters() {
 function populateFamilySelector() {
   const selector = q("filter-family");
   if (!selector) return;
-  const values = new Set(["1x2", "double_chance", "goals", "btts", "corners", "cards", "shots", "shots_on_target", "fouls", "offsides", "secondary"]);
+  const values = new Set(["1X2", "Goals", "BTTS", "Corners", "Cards", "Shots", "Shots on target", "Fouls", "Offsides", "Double chance", "Secondary"]);
   [...state.opportunities, ...state.incompleteOpportunities].forEach((opp) => {
     if (opp.family) values.add(opp.family);
   });
@@ -548,9 +549,9 @@ function renderFromState() {
   if (futureSection.notice) notices.push(futureSection.notice);
   renderOpportunityList("future-opportunities", futureSection.rows.slice(0, 50), "No hay EV+ próximos.");
 
-  const strictSecondary = strict.filter((o) => o.flags.secondary_market || o.family === "secondary");
-  const baseSecondary = base.filter((o) => o.flags.secondary_market || o.family === "secondary");
-  const relaxedSecondary = relaxed.filter((o) => o.flags.secondary_market || o.family === "secondary");
+  const strictSecondary = strict.filter((o) => o.flags.secondary_market || o.family === "Secondary");
+  const baseSecondary = base.filter((o) => o.flags.secondary_market || o.family === "Secondary");
+  const relaxedSecondary = relaxed.filter((o) => o.flags.secondary_market || o.family === "Secondary");
   const secondarySection = selectSectionWithFallback(
     strictSecondary,
     familyFilterActive ? [] : baseSecondary,
@@ -563,17 +564,17 @@ function renderFromState() {
   renderOpportunityList("secondary-opportunities", secondarySection.rows.slice(0, 50), "No hay secundarios con valor.");
 
   const familySections = [
-    ["1x2", "family-1x2", "family-1x2-incomplete", "Sin 1X2 para filtros activos."],
-    ["double_chance", "family-double-chance", "family-double-chance-incomplete", "Sin double chance para filtros activos."],
-    ["goals", "family-goals", "family-goals-incomplete", "Sin goals para filtros activos."],
-    ["btts", "family-btts", "family-btts-incomplete", "Sin BTTS para filtros activos."],
-    ["corners", "family-corners", "family-corners-incomplete", "Sin corners para filtros activos."],
-    ["cards", "family-cards", "family-cards-incomplete", "Sin cards para filtros activos."],
-    ["shots", "family-shots", "family-shots-incomplete", "Sin shots para filtros activos."],
-    ["shots_on_target", "family-shots-on-target", "family-shots-on-target-incomplete", "Sin shots on target para filtros activos."],
-    ["fouls", "family-fouls", "family-fouls-incomplete", "Sin fouls para filtros activos."],
-    ["offsides", "family-offsides", "family-offsides-incomplete", "Sin offsides para filtros activos."],
-    ["secondary", "family-secondary", "family-secondary-incomplete", "Sin secondary para filtros activos."],
+    ["1X2", "family-1x2", "family-1x2-incomplete", "Sin 1X2 para filtros activos."],
+    ["Double chance", "family-double-chance", "family-double-chance-incomplete", "Sin double chance para filtros activos."],
+    ["Goals", "family-goals", "family-goals-incomplete", "Sin goals para filtros activos."],
+    ["BTTS", "family-btts", "family-btts-incomplete", "Sin BTTS para filtros activos."],
+    ["Corners", "family-corners", "family-corners-incomplete", "Sin corners para filtros activos."],
+    ["Cards", "family-cards", "family-cards-incomplete", "Sin cards para filtros activos."],
+    ["Shots", "family-shots", "family-shots-incomplete", "Sin shots para filtros activos."],
+    ["Shots on target", "family-shots-on-target", "family-shots-on-target-incomplete", "Sin shots on target para filtros activos."],
+    ["Fouls", "family-fouls", "family-fouls-incomplete", "Sin fouls para filtros activos."],
+    ["Offsides", "family-offsides", "family-offsides-incomplete", "Sin offsides para filtros activos."],
+    ["Secondary", "family-secondary", "family-secondary-incomplete", "Sin secondary para filtros activos."],
   ];
 
   familySections.forEach(([family, target, incompleteTarget, empty]) => {
