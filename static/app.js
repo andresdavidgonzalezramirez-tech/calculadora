@@ -45,8 +45,6 @@ const FAMILY_LABELS = {
   shots: "Shots",
   secondary: "Secondary",
 };
-const LIVE_FIXTURE_STATUSES = new Set(["1H", "HT", "2H", "LIVE"]);
-const FINISHED_FIXTURE_STATUSES = new Set(["FT", "AET", "PEN", "CANC", "ABD", "PST"]);
 const SCHEDULED_FIXTURE_STATUSES = new Set(["NS"]);
 const DISPLAY_TIMEZONE = "Europe/Warsaw";
 
@@ -55,10 +53,9 @@ const toNumber = (v) => (v === null || v === undefined || v === "" ? null : Numb
 const isFuture = (iso) => Number.isFinite(Date.parse(iso || "")) && Date.parse(iso) >= Date.now();
 const dateLabel = (iso) => (!iso ? "Hora no informada" : new Intl.DateTimeFormat("es-ES", { dateStyle: "medium", timeStyle: "short", timeZone: DISPLAY_TIMEZONE }).format(new Date(iso)));
 const normalizeStatus = (value) => String(value || "").trim().toUpperCase();
-const isRenderableFixtureStatus = (status) => LIVE_FIXTURE_STATUSES.has(normalizeStatus(status)) || SCHEDULED_FIXTURE_STATUSES.has(normalizeStatus(status));
+const isRenderableFixtureStatus = (status) => SCHEDULED_FIXTURE_STATUSES.has(normalizeStatus(status));
 const countdownLabel = (iso, status) => {
   const normalizedStatus = normalizeStatus(status);
-  if (LIVE_FIXTURE_STATUSES.has(normalizedStatus)) return "En vivo";
   if (SCHEDULED_FIXTURE_STATUSES.has(normalizedStatus)) return "Próximo";
   return "";
 };
