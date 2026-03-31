@@ -5,13 +5,14 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.orm import Session
 
@@ -73,6 +74,8 @@ MARKET_FAMILY_RULES = [
 
 VISIBLE_FIXTURE_STATUSES = {"NS", "1H", "HT", "2H", "LIVE"}
 HIDDEN_FIXTURE_STATUSES = {"FT", "AET", "PEN", "CANC", "ABD", "PST"}
+DISPLAY_TIMEZONE = ZoneInfo(os.getenv("DISPLAY_TIMEZONE", "Europe/Warsaw"))
+INGEST_DEFAULT_TIMEZONE = ZoneInfo(os.getenv("INGEST_DEFAULT_TIMEZONE", "Europe/Warsaw"))
 
 
 def normalize_fixture_status(status: Optional[str]) -> Optional[str]:
@@ -263,7 +266,9 @@ def parse_dt(value: Any) -> Optional[datetime]:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if value.tzinfo:
+            return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=INGEST_DEFAULT_TIMEZONE).astimezone(timezone.utc)
     if isinstance(value, str):
         raw = value.strip()
         if not raw:
@@ -271,7 +276,9 @@ def parse_dt(value: Any) -> Optional[datetime]:
         raw = raw.replace("Z", "+00:00")
         try:
             dt = datetime.fromisoformat(raw)
-            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+            if dt.tzinfo:
+                return dt.astimezone(timezone.utc)
+            return dt.replace(tzinfo=INGEST_DEFAULT_TIMEZONE).astimezone(timezone.utc)
         except ValueError:
             return None
     return None
@@ -329,18 +336,18 @@ class FixtureInput(BaseModel):
     gf_away: float = 0
     ga_away: float = 0
 
-    cf_home: float = 0
-    ca_home: float = 0
-    cf_away: float = 0
-    ca_away: float = 0
+    cf_home: Optional[float] = None
+    ca_home: Optional[float] = None
+    cf_away: Optional[float] = None
+    ca_away: Optional[float] = None
 
-    yf_home: float = 0
-    yf_away: float = 0
+    yf_home: Optional[float] = None
+    yf_away: Optional[float] = None
 
-    shots_home: float = 0
-    shots_away: float = 0
-    shots_on_target_home: float = 0
-    shots_on_target_away: float = 0
+    shots_home: Optional[float] = None
+    shots_away: Optional[float] = None
+    shots_on_target_home: Optional[float] = None
+    shots_on_target_away: Optional[float] = None
 
     form_home: float = 0
     form_away: float = 0
@@ -353,24 +360,6 @@ class FixtureInput(BaseModel):
     head_to_head: List[Dict[str, Any]] = Field(default_factory=list)
     odds: Dict[str, Any] = Field(default_factory=dict)
     collection_meta: Dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator(
-        "cf_home",
-        "ca_home",
-        "cf_away",
-        "ca_away",
-        "yf_home",
-        "yf_away",
-        "shots_home",
-        "shots_away",
-        "shots_on_target_home",
-        "shots_on_target_away",
-        mode="before",
-    )
-    @classmethod
-    def normalize_nullable_numeric_stats(cls, value: Any) -> Any:
-        return 0 if value is None else value
-
 
 class IngestRunRequest(BaseModel):
     fixtures: List[FixtureInput] = Field(default_factory=list)
@@ -804,6 +793,20 @@ def _format_pydantic_validation_error(exc: ValidationError) -> List[Dict[str, An
     return invalid_fields
 
 
+def _validation_error_response(exc: ValidationError, message: str) -> JSONResponse:
+    invalid_fields = _format_pydantic_validation_error(exc)
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {
+                "type": "validation_error",
+                "message": message,
+                "invalid_fields": invalid_fields,
+            }
+        },
+    )
+
+
 @app.get("/")
 def root():
     if STATIC_DIR.joinpath("index.html").exists():
@@ -838,6 +841,11 @@ def validation_exception_handler(_: Request, exc: RequestValidationError):
         status_code=422,
         content={"error": {"type": "validation_error", "detail": exc.errors()}},
     )
+
+
+@app.exception_handler(ValidationError)
+def pydantic_validation_exception_handler(_: Request, exc: ValidationError):
+    return _validation_error_response(exc, "Payload inválido")
 
 
 @app.exception_handler(Exception)
@@ -931,17 +939,7 @@ def predict_compat(payload: Any = Body(...), db: Session = Depends(get_db)):
         response = ingest_run(request, db=db)
         return response
     except ValidationError as exc:
-        invalid_fields = _format_pydantic_validation_error(exc)
-        return JSONResponse(
-            status_code=422,
-            content={
-                "error": {
-                    "type": "validation_error",
-                    "message": "Payload inválido para /predict",
-                    "invalid_fields": invalid_fields,
-                }
-            },
-        )
+        return _validation_error_response(exc, "Payload inválido para /predict")
 
 
 @app.get("/predictions")
