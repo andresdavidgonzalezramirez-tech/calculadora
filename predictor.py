@@ -1163,33 +1163,7 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if out:
         return out
 
-    fallback = ordered[:3]
-    for item in fallback:
-        out.append(
-            {
-                "mercado": item["mercado"],
-                "jugada": item["jugada"],
-                "probabilidad": int(round(item["prob"] * 100)),
-                "probabilidad_cierre": int(round(item.get("close_probability", item["prob"]) * 100)),
-                "probabilidad_nivel": "Probabilidad media",
-                "cuota": round(item["cuota"], 2) if item["cuota"] else None,
-                "edge": round(item["edge"] * 100, 2),
-                "value": bool(item["es_value_bet"] or item.get("soft_value")),
-                "signal_tier": "top_pick",
-                "signal_label": "Top pick",
-                "posible_error_cuota": bool(item.get("posible_error_cuota")),
-                "cuota_sospechosa": bool(item.get("cuota_sospechosa")),
-                "oportunidad_detectada": bool(item.get("oportunidad_detectada")),
-                "stability": round(item["stability"], 4),
-                "reliability": round(item["reliability"], 4),
-                "volatility": round(item.get("volatility", 0.0), 4),
-                "fragility": round(item.get("fragility", 0.0), 4),
-                "score": round(item["score"], 4),
-                "selection_status": "RECOMMENDED",
-                "selection_reason": "passed_conservative_filters",
-            }
-        )
-    return out
+    return []
 
 
 def _alert_level_from_best(best: Dict[str, Any]) -> int:
@@ -1527,7 +1501,7 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
     signal_count = len(apuestas_fuertes)
     value_count = sum(1 for item in apuestas_fuertes if item.get("signal_tier") in {"strong_value", "medium_value", "low_value"})
     integrity_alerts = sum(1 for item in apuestas_fuertes if item.get("posible_error_cuota") or item.get("cuota_sospechosa"))
-    top_signal_label = apuestas_fuertes[0]["signal_label"] if apuestas_fuertes else "Seguimiento"
+    top_signal_label = apuestas_fuertes[0]["signal_label"] if apuestas_fuertes else ("NO_BET" if best.get("selection_status") == "NO_BET" else "Seguimiento")
     best["signal_tier"] = apuestas_fuertes[0]["signal_tier"] if apuestas_fuertes else best.get("signal_tier", "watch")
 
     predicted_winner = (

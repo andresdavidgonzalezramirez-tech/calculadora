@@ -147,6 +147,8 @@ function normalizeOpportunity(raw) {
     rank: toNumber(raw.rank),
     score: toNumber(raw.score),
     stake: toNumber(raw.stake),
+    selection_status: raw.selection_status || raw.selectionStatus || null,
+    selection_reason: raw.selection_reason || raw.selectionReason || null,
     source: raw.source || "N/D",
     reason_inclusion: raw.reason_inclusion || raw.inclusion_reason || "N/D",
     reason_discard: raw.reason_discard || raw.discard_reason || null,
@@ -161,6 +163,18 @@ function normalizeOpportunity(raw) {
     },
   };
   normalized.market_complete = isCompleteOpportunity(normalized);
+  if (!normalized.selection_status) {
+    if (normalized.market_complete && normalized.odds !== null && normalized.odds > CONSERVATIVE_MAX_ODDS) {
+      normalized.selection_status = "NO_BET";
+      normalized.selection_reason = normalized.selection_reason || "odds_too_high";
+    } else if ((normalized.stake ?? 0) <= 0 || (normalized.close_probability ?? 0) < 0.66) {
+      normalized.selection_status = "NO_BET";
+      normalized.selection_reason = normalized.selection_reason || "below_conservative_threshold";
+    } else {
+      normalized.selection_status = "RECOMMENDED";
+      normalized.selection_reason = normalized.selection_reason || "passed_conservative_filters";
+    }
+  }
   return normalized;
 }
 
@@ -228,6 +242,7 @@ function applyFilters(opps, options = {}) {
   };
 
   return opps.filter((o) => {
+    if (o.selection_status === "NO_BET") return false;
     if (state.filters.country && o.pais !== state.filters.country) return false;
     if (state.filters.league && o.liga !== state.filters.league) return false;
     if (state.filters.team && !(o.partido || "").includes(state.filters.team)) return false;
