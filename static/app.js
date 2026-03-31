@@ -419,6 +419,13 @@ function getFamilyDataset(family, strictDataset, baseDataset) {
   const strictFamily = strictDataset.filter((o) => o.family === family);
   if (strictFamily.length) return { rows: strictFamily.slice(0, 40), notice: null };
 
+  if (state.filters.family) {
+    return {
+      rows: [],
+      notice: `No hay oportunidades completas para ${FAMILY_LABELS[family]} con los filtros activos.`,
+    };
+  }
+
   const byFamilyRows = (state.byFamily[family] || []).map(normalizeOpportunity);
   const familyWithContext = withFixtureContext(byFamilyRows, new Map(state.matches.map((m) => [Number(m.fixture_id), m])));
   const filteredByFamily = applyFilters(familyWithContext.filter((o) => o.market_complete), { respectFamily: false });
@@ -483,13 +490,19 @@ function bindFilters() {
 }
 
 function renderFromState() {
+  const familyFilterActive = Boolean(state.filters.family);
   const strict = applyFilters(state.opportunities, { respectFamily: true });
   const base = applyFilters(state.opportunities, { respectFamily: false });
   const relaxed = applyFilters(state.opportunities, { respectFamily: false, relaxNumeric: true, relaxQuick: true });
   const notices = [];
 
-  const topSection = selectSectionWithFallback(strict, base, relaxed, {
+  const topSection = selectSectionWithFallback(
+    strict,
+    familyFilterActive ? [] : base,
+    familyFilterActive ? [] : relaxed,
+    {
     familyNotice: "No hay resultados para la familia seleccionada con los filtros actuales. Mostrando oportunidades generales.",
+    emptyNotice: familyFilterActive ? "No hay oportunidades top para la familia seleccionada con los filtros activos." : null,
   });
   if (topSection.notice) notices.push(topSection.notice);
   renderOpportunityList("top-opportunities", topSection.rows.slice(0, 50), "No hay oportunidades top para filtros activos.");
@@ -497,8 +510,13 @@ function renderFromState() {
   const strictFuture = strict.filter((o) => o.flags.ev_plus && isFuture(o.hora));
   const baseFuture = base.filter((o) => o.flags.ev_plus && isFuture(o.hora));
   const relaxedFuture = relaxed.filter((o) => o.flags.ev_plus && isFuture(o.hora));
-  const futureSection = selectSectionWithFallback(strictFuture, baseFuture, relaxedFuture, {
+  const futureSection = selectSectionWithFallback(
+    strictFuture,
+    familyFilterActive ? [] : baseFuture,
+    familyFilterActive ? [] : relaxedFuture,
+    {
     familyNotice: "No hay EV+ próximos para esta familia. Mostrando EV+ generales.",
+    emptyNotice: familyFilterActive ? "No hay EV+ próximos para la familia seleccionada con los filtros activos." : null,
   });
   if (futureSection.notice) notices.push(futureSection.notice);
   renderOpportunityList("future-opportunities", futureSection.rows.slice(0, 50), "No hay EV+ próximos.");
@@ -506,8 +524,13 @@ function renderFromState() {
   const strictSecondary = strict.filter((o) => o.flags.secondary_market || o.family === "secondary");
   const baseSecondary = base.filter((o) => o.flags.secondary_market || o.family === "secondary");
   const relaxedSecondary = relaxed.filter((o) => o.flags.secondary_market || o.family === "secondary");
-  const secondarySection = selectSectionWithFallback(strictSecondary, baseSecondary, relaxedSecondary, {
+  const secondarySection = selectSectionWithFallback(
+    strictSecondary,
+    familyFilterActive ? [] : baseSecondary,
+    familyFilterActive ? [] : relaxedSecondary,
+    {
     familyNotice: "No hay mercados secundarios para esta familia. Mostrando secundarios generales.",
+    emptyNotice: familyFilterActive ? "No hay mercados secundarios para la familia seleccionada con los filtros activos." : null,
   });
   if (secondarySection.notice) notices.push(secondarySection.notice);
   renderOpportunityList("secondary-opportunities", secondarySection.rows.slice(0, 50), "No hay secundarios con valor.");
