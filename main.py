@@ -62,6 +62,175 @@ if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+MARKET_FAMILY_RULES = [
+    ("1x2", ("1X2", "DC_")),
+    ("goals", ("OVER", "UNDER", "TEAM_", "GOALS", "SCORE")),
+    ("btts", ("BTTS", "AMBOS")),
+    ("corners", ("CORNER",)),
+    ("cards", ("CARD", "TARJET")),
+    ("shots", ("SHOT", "SOT", "TIRO", "PUERTA")),
+]
+
+
+def infer_market_family(code: Optional[str], market: Optional[str]) -> str:
+    token = f"{code or ''} {market or ''}".upper()
+    for family, keywords in MARKET_FAMILY_RULES:
+        if any(keyword in token for keyword in keywords):
+            return family
+    return "secondary"
+
+
+def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any]:
+    rows_sorted = sorted(rows, key=lambda item: item.hora or datetime.max.replace(tzinfo=timezone.utc))
+    partidos = [serialize_prediction(row) for row in rows_sorted[:limit]]
+
+    market_telemetry: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    all_opportunities: List[Dict[str, Any]] = []
+    opportunities_ev: List[Dict[str, Any]] = []
+    top_by_family: Dict[str, List[Dict[str, Any]]] = {}
+    country_map: Dict[str, Dict[str, Any]] = {}
+    match_radar: List[Dict[str, Any]] = []
+
+    for row in rows_sorted:
+        fixture_id = int(row.fixture_id)
+        fixture_key = str(fixture_id)
+        market_telemetry[fixture_key] = {}
+
+        breakdown = row.market_breakdown if isinstance(row.market_breakdown, list) else []
+        included: List[Dict[str, Any]] = []
+        excluded: List[Dict[str, Any]] = []
+        detected_families = set()
+
+        for index, item in enumerate(breakdown):
+            if not isinstance(item, dict):
+                continue
+
+            model_prob = num_or_none(item.get("prob"), 6)
+            odds = num_or_none(item.get("cuota"), 4)
+            implied_prob = num_or_none(item.get("probabilidad_implicita"), 6)
+            edge = num_or_none(item.get("edge"), 6)
+            ev = num_or_none(item.get("ev"), 6)
+            market_complete = bool(item.get("market_complete") and model_prob is not None and odds is not None and implied_prob is not None)
+            family = infer_market_family(item.get("code"), item.get("mercado"))
+            detected_families.add(family)
+
+            opportunity = {
+                "fixture_id": fixture_id,
+                "partido": f"{row.local or 'Local'} vs {row.visitante or 'Visitante'}",
+                "pais": row.pais or "",
+                "liga": row.liga or "",
+                "hora": row.hora.isoformat() if row.hora else None,
+                "code": item.get("code") or f"MARKET_{index + 1}",
+                "market": item.get("mercado") or item.get("code") or "N/D",
+                "pick": item.get("jugada") or "N/D",
+                "family": family,
+                "line": num_or_none(item.get("line"), 2),
+                "odds": odds,
+                "model_prob": model_prob,
+                "implied_prob": implied_prob,
+                "edge": edge,
+                "ev": ev,
+                "close_probability": num_or_none(item.get("close_probability"), 6) or model_prob,
+                "market_complete": market_complete,
+                "completeness_reason": None if market_complete else "missing_pricing_or_probability",
+                "flags": {
+                    "ev_plus": bool(ev is not None and ev > 0),
+                    "value": bool(item.get("value") or (edge is not None and edge > 0)),
+                    "strong_signal": str(item.get("signal_tier") or "").startswith("strong"),
+                    "secondary_market": family in {"corners", "cards", "shots", "secondary"},
+                },
+                "source": "market_breakdown",
+                "reason_inclusion": "market_breakdown",
+                "signal_tier": item.get("signal_tier"),
+                "volatility": num_or_none(item.get("volatility"), 4),
+                "fragility": num_or_none(item.get("fragility"), 4),
+                "reliability": num_or_none(item.get("reliability"), 4),
+                "stability": num_or_none(item.get("stability"), 4),
+            }
+
+            market_telemetry[fixture_key][opportunity["code"]] = opportunity
+            all_opportunities.append(opportunity)
+
+            if opportunity["flags"]["ev_plus"] and market_complete:
+                opportunities_ev.append(opportunity)
+                top_by_family.setdefault(family, []).append(opportunity)
+                included.append(opportunity)
+            else:
+                if not market_complete:
+                    opportunity["reason_discard"] = "market_incomplete"
+                excluded.append(opportunity)
+
+        country = row.pais or "N/D"
+        league = row.liga or "N/D"
+        info = country_map.setdefault(country, {"pais": country, "partidos": 0, "ev_plus": 0, "value_bets": 0, "_ligas": {}})
+        info["partidos"] += 1
+        info["ev_plus"] += sum(1 for item in included if item["flags"]["ev_plus"])
+        info["value_bets"] += sum(1 for item in included if item["flags"]["value"])
+        league_info = info["_ligas"].setdefault(league, {"liga": league, "partidos": 0, "ev_plus": 0, "value_bets": 0})
+        league_info["partidos"] += 1
+        league_info["ev_plus"] += sum(1 for item in included if item["flags"]["ev_plus"])
+        league_info["value_bets"] += sum(1 for item in included if item["flags"]["value"])
+
+        match_radar.append({
+            "fixture_id": fixture_id,
+            "liga": row.liga or "",
+            "pais": row.pais or "",
+            "hora": row.hora.isoformat() if row.hora else None,
+            "equipos": {"local": row.local or "", "visitante": row.visitante or ""},
+            "familias_detectadas": sorted(detected_families),
+            "oportunidades_incluidas": included,
+            "oportunidades_excluidas": excluded,
+        })
+
+    paises = []
+    for country in sorted(country_map):
+        item = country_map[country]
+        leagues = sorted(item.pop("_ligas").values(), key=lambda league_row: league_row["liga"])
+        item["ligas"] = leagues
+        paises.append(item)
+
+    opportunities_ev_sorted = sorted(
+        opportunities_ev,
+        key=lambda item: (item.get("close_probability") or -1, item.get("ev") or -999),
+        reverse=True,
+    )[:limit]
+
+    top_opportunities = sorted(
+        [item for item in all_opportunities if item.get("market_complete")],
+        key=lambda item: (item.get("close_probability") or -1, item.get("edge") or -999),
+        reverse=True,
+    )[:limit]
+
+    top_by_family_sorted = {
+        family: sorted(items, key=lambda item: (item.get("close_probability") or -1, item.get("ev") or -999), reverse=True)[:50]
+        for family, items in top_by_family.items()
+    }
+
+    summary = {
+        "total_paises": len(paises),
+        "total_ligas": len({(row.liga_id, row.liga) for row in rows_sorted}),
+        "total_partidos_proximos": len(rows_sorted),
+        "total_mercados_analizados": len(all_opportunities),
+        "total_senales": sum(len(row.apuestas_fuertes or []) for row in rows_sorted),
+        "total_oportunidades_ev_plus": len(opportunities_ev_sorted),
+        "total_apuestas_fuertes": sum(1 for item in top_opportunities if item["flags"]["strong_signal"]),
+        "total_value_bets": sum(1 for item in top_opportunities if item["flags"]["value"]),
+    }
+
+    return {
+        "generated_at": utcnow().isoformat(),
+        "partidos": partidos,
+        "market_telemetry": market_telemetry,
+        "oportunidades_ev": opportunities_ev_sorted,
+        "top_opportunities": top_opportunities,
+        "top_by_family": top_by_family_sorted,
+        "apuestas_fuertes": [item for row in rows_sorted for item in (row.apuestas_fuertes or [])][:limit],
+        "paises": paises,
+        "match_radar": match_radar[:limit],
+        "summary": summary,
+    }
+
+
 def parse_dt(value: Any) -> Optional[datetime]:
     if value is None:
         return None
@@ -327,6 +496,7 @@ def upsert_prediction(db: Session, result: Dict[str, Any], run_id: int) -> None:
     existing.es_value_bet = int(result.get("es_value_bet", 0) or 0)
     existing.confianza = result.get("confianza")
     existing.apuestas_fuertes = result.get("apuestas_fuertes") or []
+    existing.market_breakdown = result.get("market_breakdown") or []
 
     existing.posible_error_cuota = int(result.get("posible_error_cuota", 0) or 0)
     existing.cuota_sospechosa = int(result.get("cuota_sospechosa", 0) or 0)
@@ -561,6 +731,7 @@ def root():
         "panel_partidos": "/panel/partidos",
         "panel_apuestas_fuertes": "/panel/apuestas-fuertes",
         "panel_resumen": "/panel/resumen",
+        "panel_dashboard": "/panel/dashboard",
         "predictions": "/predictions",
         "summary": "/summary",
         "alerts": "/alerts",
@@ -745,6 +916,24 @@ def panel_apuestas_fuertes(
         })
 
     return {"apuestas": apuestas}
+
+
+@app.get("/panel/dashboard")
+def panel_dashboard(
+    liga_id: int = Query(0, ge=0),
+    only_value: int = Query(0, ge=0, le=1),
+    limit: int = Query(300, ge=1, le=3000),
+    db: Session = Depends(get_db),
+):
+    stmt = select(Prediction)
+    if liga_id:
+        stmt = stmt.where(Prediction.liga_id == liga_id)
+    if only_value:
+        stmt = stmt.where(Prediction.es_value_bet == 1)
+
+    stmt = stmt.order_by(asc(Prediction.hora), asc(Prediction.liga)).limit(limit)
+    rows = db.execute(stmt).scalars().all()
+    return build_dashboard_payload(rows, limit=limit)
 
 
 @app.get("/alerts")
