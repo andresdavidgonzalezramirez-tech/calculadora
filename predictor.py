@@ -44,6 +44,24 @@ MARKET_PROFILES = {
     "SHOTS_AWAY": {"group": "Tiros", "reliability": 0.61, "volatility": 0.58, "edge_threshold": 0.058},
     "SOT_HOME": {"group": "Tiros a puerta", "reliability": 0.58, "volatility": 0.62, "edge_threshold": 0.062},
     "SOT_AWAY": {"group": "Tiros a puerta", "reliability": 0.57, "volatility": 0.63, "edge_threshold": 0.062},
+    "CORNERS_HOME_OVER_3_5": {"group": "Corners equipo", "reliability": 0.82, "volatility": 0.37, "edge_threshold": 0.040},
+    "CORNERS_HOME_OVER_4_5": {"group": "Corners equipo", "reliability": 0.76, "volatility": 0.45, "edge_threshold": 0.046},
+    "CORNERS_AWAY_OVER_3_5": {"group": "Corners equipo", "reliability": 0.79, "volatility": 0.40, "edge_threshold": 0.042},
+    "CORNERS_AWAY_OVER_4_5": {"group": "Corners equipo", "reliability": 0.72, "volatility": 0.48, "edge_threshold": 0.048},
+    "CARDS_HOME_OVER_1_5": {"group": "Tarjetas equipo", "reliability": 0.83, "volatility": 0.36, "edge_threshold": 0.038},
+    "CARDS_HOME_OVER_2_5": {"group": "Tarjetas equipo", "reliability": 0.74, "volatility": 0.46, "edge_threshold": 0.046},
+    "CARDS_AWAY_OVER_1_5": {"group": "Tarjetas equipo", "reliability": 0.82, "volatility": 0.37, "edge_threshold": 0.040},
+    "CARDS_AWAY_OVER_2_5": {"group": "Tarjetas equipo", "reliability": 0.73, "volatility": 0.47, "edge_threshold": 0.047},
+    "TEAM_HOME_SCORE_YES": {"group": "Goles equipo", "reliability": 0.86, "volatility": 0.32, "edge_threshold": 0.035},
+    "TEAM_AWAY_SCORE_YES": {"group": "Goles equipo", "reliability": 0.82, "volatility": 0.38, "edge_threshold": 0.040},
+    "TEAM_HOME_OVER_0_5": {"group": "Goles equipo", "reliability": 0.87, "volatility": 0.31, "edge_threshold": 0.034},
+    "TEAM_HOME_OVER_1_5": {"group": "Goles equipo", "reliability": 0.74, "volatility": 0.48, "edge_threshold": 0.046},
+    "TEAM_AWAY_OVER_0_5": {"group": "Goles equipo", "reliability": 0.84, "volatility": 0.35, "edge_threshold": 0.038},
+    "TEAM_AWAY_OVER_1_5": {"group": "Goles equipo", "reliability": 0.70, "volatility": 0.52, "edge_threshold": 0.050},
+    "SHOTS_HOME_OVER_X": {"group": "Tiros equipo", "reliability": 0.64, "volatility": 0.54, "edge_threshold": 0.056},
+    "SHOTS_AWAY_OVER_X": {"group": "Tiros equipo", "reliability": 0.62, "volatility": 0.56, "edge_threshold": 0.058},
+    "SOT_HOME_OVER_X": {"group": "Tiros a puerta equipo", "reliability": 0.61, "volatility": 0.58, "edge_threshold": 0.058},
+    "SOT_AWAY_OVER_X": {"group": "Tiros a puerta equipo", "reliability": 0.59, "volatility": 0.60, "edge_threshold": 0.060},
 }
 
 STABLE_MARKET_PRIORITY = {
@@ -543,6 +561,8 @@ def _collect_odds_map(raw_odds: Any) -> Dict[str, Any]:
             ("goals_over/under", "over_3.5"): ["over35", "over_3_5", "goals_over_3_5", "totals_over_3_5", "total_goals_over_3_5"],
             ("goals_over/under", "under_4.5"): ["under45", "under_4_5", "goals_under_4_5", "totals_under_4_5", "total_goals_under_4_5"],
             ("both_teams_to_score", "yes"): ["btts_yes", "both_teams_to_score_yes", "gg_yes", "btts", "both_teams_score_yes"],
+            ("team_home_score", "yes"): ["team_home_score_yes", "home_team_to_score_yes", "home_score_yes"],
+            ("team_away_score", "yes"): ["team_away_score_yes", "away_team_to_score_yes", "away_score_yes"],
         }
 
         aliases = alias_map.get((market, selection), [])
@@ -704,10 +724,32 @@ def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
         "over95_corners": _pick_odds(flat, "over95_corners", "corners_over_9_5", "over_9_5_corners", "total_corners_over_9_5"),
         "over35_cards": _pick_odds(flat, "over35_cards", "cards_over_3_5", "over_3_5_cards", "total_cards_over_3_5"),
         "over45_cards": _pick_odds(flat, "over45_cards", "cards_over_4_5", "over_4_5_cards", "total_cards_over_4_5"),
+        "corners_home_over_3_5": _pick_odds(flat, "corners_home_over_3_5", "home_corners_over_3_5"),
+        "corners_home_over_4_5": _pick_odds(flat, "corners_home_over_4_5", "home_corners_over_4_5"),
+        "corners_away_over_3_5": _pick_odds(flat, "corners_away_over_3_5", "away_corners_over_3_5"),
+        "corners_away_over_4_5": _pick_odds(flat, "corners_away_over_4_5", "away_corners_over_4_5"),
+        "cards_home_over_1_5": _pick_odds(flat, "cards_home_over_1_5", "home_cards_over_1_5"),
+        "cards_home_over_2_5": _pick_odds(flat, "cards_home_over_2_5", "home_cards_over_2_5"),
+        "cards_away_over_1_5": _pick_odds(flat, "cards_away_over_1_5", "away_cards_over_1_5"),
+        "cards_away_over_2_5": _pick_odds(flat, "cards_away_over_2_5", "away_cards_over_2_5"),
+        "team_home_score_yes": _pick_odds(flat, "team_home_score_yes", "home_team_to_score_yes", "home_score_yes"),
+        "team_away_score_yes": _pick_odds(flat, "team_away_score_yes", "away_team_to_score_yes", "away_score_yes"),
+        "team_home_over_0_5": _pick_odds(flat, "team_home_over_0_5", "home_over_0_5_goals", "home_team_goals_over_0_5"),
+        "team_home_over_1_5": _pick_odds(flat, "team_home_over_1_5", "home_over_1_5_goals", "home_team_goals_over_1_5"),
+        "team_away_over_0_5": _pick_odds(flat, "team_away_over_0_5", "away_over_0_5_goals", "away_team_goals_over_0_5"),
+        "team_away_over_1_5": _pick_odds(flat, "team_away_over_1_5", "away_over_1_5_goals", "away_team_goals_over_1_5"),
         "shots_home": _pick_odds(flat, "shots_home", "home_shots_over"),
         "shots_away": _pick_odds(flat, "shots_away", "away_shots_over"),
         "sot_home": _pick_odds(flat, "sot_home", "home_shots_on_target_over"),
         "sot_away": _pick_odds(flat, "sot_away", "away_shots_on_target_over"),
+        "shots_home_over_x": _pick_odds(flat, "shots_home_over_x", "home_shots_over_x", "shots_home_over"),
+        "shots_away_over_x": _pick_odds(flat, "shots_away_over_x", "away_shots_over_x", "shots_away_over"),
+        "sot_home_over_x": _pick_odds(flat, "sot_home_over_x", "home_sot_over_x", "sot_home_over"),
+        "sot_away_over_x": _pick_odds(flat, "sot_away_over_x", "away_sot_over_x", "sot_away_over"),
+        "shots_home_line": _safe_float(flat.get("shots_home_line"), 0.0) or None,
+        "shots_away_line": _safe_float(flat.get("shots_away_line"), 0.0) or None,
+        "sot_home_line": _safe_float(flat.get("sot_home_line"), 0.0) or None,
+        "sot_away_line": _safe_float(flat.get("sot_away_line"), 0.0) or None,
     }
 
 
@@ -733,6 +775,24 @@ def _market_name(code: str, home_name: str, away_name: str) -> str:
         "SHOTS_AWAY": f"{away_name} tiros altos",
         "SOT_HOME": f"{home_name} tiros a puerta altos",
         "SOT_AWAY": f"{away_name} tiros a puerta altos",
+        "CORNERS_HOME_OVER_3_5": f"{home_name} más de 3.5 corners",
+        "CORNERS_HOME_OVER_4_5": f"{home_name} más de 4.5 corners",
+        "CORNERS_AWAY_OVER_3_5": f"{away_name} más de 3.5 corners",
+        "CORNERS_AWAY_OVER_4_5": f"{away_name} más de 4.5 corners",
+        "CARDS_HOME_OVER_1_5": f"{home_name} más de 1.5 tarjetas",
+        "CARDS_HOME_OVER_2_5": f"{home_name} más de 2.5 tarjetas",
+        "CARDS_AWAY_OVER_1_5": f"{away_name} más de 1.5 tarjetas",
+        "CARDS_AWAY_OVER_2_5": f"{away_name} más de 2.5 tarjetas",
+        "TEAM_HOME_SCORE_YES": f"{home_name} marcará (sí)",
+        "TEAM_AWAY_SCORE_YES": f"{away_name} marcará (sí)",
+        "TEAM_HOME_OVER_0_5": f"{home_name} más de 0.5 goles",
+        "TEAM_HOME_OVER_1_5": f"{home_name} más de 1.5 goles",
+        "TEAM_AWAY_OVER_0_5": f"{away_name} más de 0.5 goles",
+        "TEAM_AWAY_OVER_1_5": f"{away_name} más de 1.5 goles",
+        "SHOTS_HOME_OVER_X": f"{home_name} tiros over X",
+        "SHOTS_AWAY_OVER_X": f"{away_name} tiros over X",
+        "SOT_HOME_OVER_X": f"{home_name} tiros a puerta over X",
+        "SOT_AWAY_OVER_X": f"{away_name} tiros a puerta over X",
     }
     return mapping.get(code, code)
 
@@ -829,6 +889,7 @@ def _build_market(
     data_quality: float,
     home_name: str,
     away_name: str,
+    line: Optional[float] = None,
 ) -> Dict[str, Any]:
     prob = _calibrated_binary_prob(prob, _clamp((quality * 0.68) + (data_quality * 0.32), 0.35, 1.0))
     reliability = _market_reliability(code)
@@ -867,7 +928,15 @@ def _build_market(
         "data_quality": data_quality,
         "signal_tier": signal_tier,
         "score": score,
+        "line": line,
     }
+
+
+def _infer_dynamic_line(metric: Optional[float], low: float, high: float, default: float) -> float:
+    if metric is None:
+        return default
+    proposal = round((metric - 0.8) * 2.0) / 2.0
+    return _clamp(proposal, low, high)
 
 
 def _select_primary_bet(markets: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1265,20 +1334,47 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         markets.append(_build_market("O75_CORNERS", prob_over_lambda(corners_totales, 7.5), odds.get("over75_corners"), implied_prob(odds.get("over75_corners")), structural_quality, corners_quality, home_name, away_name))
         markets.append(_build_market("O85_CORNERS", prob_over_lambda(corners_totales, 8.5), odds.get("over85_corners"), implied_prob(odds.get("over85_corners")), structural_quality, corners_quality, home_name, away_name))
         markets.append(_build_market("O95_CORNERS", prob_over_lambda(corners_totales, 9.5), odds.get("over95_corners"), implied_prob(odds.get("over95_corners")), structural_quality, corners_quality, home_name, away_name))
+    if corners_local is not None and corners_ready is not False:
+        markets.append(_build_market("CORNERS_HOME_OVER_3_5", prob_over_lambda(corners_local, 3.5), odds.get("corners_home_over_3_5"), implied_prob(odds.get("corners_home_over_3_5")), structural_quality, corners_quality, home_name, away_name, line=3.5))
+        markets.append(_build_market("CORNERS_HOME_OVER_4_5", prob_over_lambda(corners_local, 4.5), odds.get("corners_home_over_4_5"), implied_prob(odds.get("corners_home_over_4_5")), structural_quality, corners_quality, home_name, away_name, line=4.5))
+    if corners_visitante is not None and corners_ready is not False:
+        markets.append(_build_market("CORNERS_AWAY_OVER_3_5", prob_over_lambda(corners_visitante, 3.5), odds.get("corners_away_over_3_5"), implied_prob(odds.get("corners_away_over_3_5")), structural_quality, corners_quality, home_name, away_name, line=3.5))
+        markets.append(_build_market("CORNERS_AWAY_OVER_4_5", prob_over_lambda(corners_visitante, 4.5), odds.get("corners_away_over_4_5"), implied_prob(odds.get("corners_away_over_4_5")), structural_quality, corners_quality, home_name, away_name, line=4.5))
 
     if tarjetas_totales is not None and cards_ready is not False:
         markets.append(_build_market("O35_CARDS", prob_over_lambda(tarjetas_totales, 3.5), odds.get("over35_cards"), implied_prob(odds.get("over35_cards")), structural_quality, cards_quality, home_name, away_name))
         markets.append(_build_market("O45_CARDS", prob_over_lambda(tarjetas_totales, 4.5), odds.get("over45_cards"), implied_prob(odds.get("over45_cards")), structural_quality, cards_quality, home_name, away_name))
+    if tarjetas_local is not None and cards_ready is not False:
+        markets.append(_build_market("CARDS_HOME_OVER_1_5", prob_over_lambda(tarjetas_local, 1.5), odds.get("cards_home_over_1_5"), implied_prob(odds.get("cards_home_over_1_5")), structural_quality, cards_quality, home_name, away_name, line=1.5))
+        markets.append(_build_market("CARDS_HOME_OVER_2_5", prob_over_lambda(tarjetas_local, 2.5), odds.get("cards_home_over_2_5"), implied_prob(odds.get("cards_home_over_2_5")), structural_quality, cards_quality, home_name, away_name, line=2.5))
+    if tarjetas_visitante is not None and cards_ready is not False:
+        markets.append(_build_market("CARDS_AWAY_OVER_1_5", prob_over_lambda(tarjetas_visitante, 1.5), odds.get("cards_away_over_1_5"), implied_prob(odds.get("cards_away_over_1_5")), structural_quality, cards_quality, home_name, away_name, line=1.5))
+        markets.append(_build_market("CARDS_AWAY_OVER_2_5", prob_over_lambda(tarjetas_visitante, 2.5), odds.get("cards_away_over_2_5"), implied_prob(odds.get("cards_away_over_2_5")), structural_quality, cards_quality, home_name, away_name, line=2.5))
 
-    if tiros_local is not None and shots_home_quality >= 0.58 and shots_total_ready is not False:
+    markets.append(_build_market("TEAM_HOME_SCORE_YES", gol_local, odds.get("team_home_score_yes"), implied_prob(odds.get("team_home_score_yes")), structural_quality, structural_quality, home_name, away_name))
+    markets.append(_build_market("TEAM_AWAY_SCORE_YES", gol_visitante, odds.get("team_away_score_yes"), implied_prob(odds.get("team_away_score_yes")), structural_quality, structural_quality, home_name, away_name))
+    markets.append(_build_market("TEAM_HOME_OVER_0_5", gol_local, odds.get("team_home_over_0_5"), implied_prob(odds.get("team_home_over_0_5")), structural_quality, structural_quality, home_name, away_name, line=0.5))
+    markets.append(_build_market("TEAM_HOME_OVER_1_5", prob_over_lambda(lambda_home, 1.5), odds.get("team_home_over_1_5"), implied_prob(odds.get("team_home_over_1_5")), structural_quality, structural_quality, home_name, away_name, line=1.5))
+    markets.append(_build_market("TEAM_AWAY_OVER_0_5", gol_visitante, odds.get("team_away_over_0_5"), implied_prob(odds.get("team_away_over_0_5")), structural_quality, structural_quality, home_name, away_name, line=0.5))
+    markets.append(_build_market("TEAM_AWAY_OVER_1_5", prob_over_lambda(lambda_away, 1.5), odds.get("team_away_over_1_5"), implied_prob(odds.get("team_away_over_1_5")), structural_quality, structural_quality, home_name, away_name, line=1.5))
+
+    if tiros_local is not None and shots_home_quality >= 0.45 and shots_total_ready is not False:
         markets.append(_build_market("SHOTS_HOME", 0.50 + ((tiros_local - LEAGUE_BASELINES["shots_home"]) / 20.0), odds.get("shots_home"), implied_prob(odds.get("shots_home")), structural_quality, shots_home_quality, home_name, away_name))
-    if puerta_local is not None and shots_home_quality >= 0.58 and shots_on_target_ready is not False:
+        shots_home_line = odds.get("shots_home_line") or _infer_dynamic_line(tiros_local, 6.5, 14.5, 9.5)
+        markets.append(_build_market("SHOTS_HOME_OVER_X", prob_over_lambda(tiros_local, shots_home_line), odds.get("shots_home_over_x"), implied_prob(odds.get("shots_home_over_x")), structural_quality, shots_home_quality, home_name, away_name, line=shots_home_line))
+    if puerta_local is not None and shots_home_quality >= 0.45 and shots_on_target_ready is not False:
         markets.append(_build_market("SOT_HOME", 0.50 + ((puerta_local - LEAGUE_BASELINES["shots_on_home"]) / 8.0), odds.get("sot_home"), implied_prob(odds.get("sot_home")), structural_quality, shots_home_quality, home_name, away_name))
+        sot_home_line = odds.get("sot_home_line") or _infer_dynamic_line(puerta_local, 1.5, 5.5, 3.5)
+        markets.append(_build_market("SOT_HOME_OVER_X", prob_over_lambda(puerta_local, sot_home_line), odds.get("sot_home_over_x"), implied_prob(odds.get("sot_home_over_x")), structural_quality, shots_home_quality, home_name, away_name, line=sot_home_line))
 
-    if tiros_visitante is not None and shots_away_quality >= 0.58 and shots_total_ready is not False:
+    if tiros_visitante is not None and shots_away_quality >= 0.45 and shots_total_ready is not False:
         markets.append(_build_market("SHOTS_AWAY", 0.50 + ((tiros_visitante - LEAGUE_BASELINES["shots_away"]) / 20.0), odds.get("shots_away"), implied_prob(odds.get("shots_away")), structural_quality, shots_away_quality, home_name, away_name))
-    if puerta_visitante is not None and shots_away_quality >= 0.58 and shots_on_target_ready is not False:
+        shots_away_line = odds.get("shots_away_line") or _infer_dynamic_line(tiros_visitante, 6.5, 13.5, 8.5)
+        markets.append(_build_market("SHOTS_AWAY_OVER_X", prob_over_lambda(tiros_visitante, shots_away_line), odds.get("shots_away_over_x"), implied_prob(odds.get("shots_away_over_x")), structural_quality, shots_away_quality, home_name, away_name, line=shots_away_line))
+    if puerta_visitante is not None and shots_away_quality >= 0.45 and shots_on_target_ready is not False:
         markets.append(_build_market("SOT_AWAY", 0.50 + ((puerta_visitante - LEAGUE_BASELINES["shots_on_away"]) / 8.0), odds.get("sot_away"), implied_prob(odds.get("sot_away")), structural_quality, shots_away_quality, home_name, away_name))
+        sot_away_line = odds.get("sot_away_line") or _infer_dynamic_line(puerta_visitante, 1.5, 5.0, 3.0)
+        markets.append(_build_market("SOT_AWAY_OVER_X", prob_over_lambda(puerta_visitante, sot_away_line), odds.get("sot_away_over_x"), implied_prob(odds.get("sot_away_over_x")), structural_quality, shots_away_quality, home_name, away_name, line=sot_away_line))
 
     best = _select_primary_bet(markets)
     apuestas_fuertes = _strong_bets(markets)
@@ -1354,6 +1450,26 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         "top_signal_label": top_signal_label,
         "data_quality": round(structural_quality, 4),
         "model_version": "predictor_pro_v4_3_null_safe",
+        "market_breakdown": [
+            {
+                "code": item["code"],
+                "mercado": item["mercado"],
+                "jugada": item["jugada"],
+                "prob": round(item["prob"], 6),
+                "cuota": round(item["cuota"], 4) if item.get("cuota") else None,
+                "edge": round(item["edge"], 6),
+                "line": round(item["line"], 2) if item.get("line") is not None else None,
+                "reliability": round(item["reliability"], 4),
+                "stability": round(item["stability"], 4),
+                "signal_tier": item.get("signal_tier"),
+                "value": bool(item.get("es_value_bet") or item.get("soft_value")),
+                "probabilidad_implicita": round(item["probabilidad_implicita"], 6) if item.get("probabilidad_implicita") is not None else None,
+                "probabilidad_justa": round(item["probabilidad_justa"], 6) if item.get("probabilidad_justa") is not None else None,
+                "ev": round((item["cuota"] * item["prob"] - 1.0), 6) if item.get("cuota") else None,
+                "market_complete": bool(item.get("cuota") and item.get("probabilidad_implicita") is not None),
+            }
+            for item in markets
+        ],
         "alert_level": _alert_level_from_best(best),
         "alert_title": _alert_title(_alert_level_from_best(best)),
         "stake_sugerido_unidades": _stake_units(confianza, best["stability"], best["edge"], best["code"]),

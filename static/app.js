@@ -95,6 +95,7 @@ function inferFamily(raw = {}) {
   if (["CORNER", "CORNERS", "SAQUES DE ESQUINA"].some((k) => token.includes(k))) return "corners";
   if (["CARD", "CARDS", "TARJET", "AMARILLA", "ROJA"].some((k) => token.includes(k))) return "cards";
   if (["SHOT", "SHOTS", "SOT", "TIROS", "REMATES", "PUERTA"].some((k) => token.includes(k))) return "shots";
+  if (["TEAM", "MARCARA", "SCORE YES", "GOLES EQUIPO"].some((k) => token.includes(k))) return "goals";
   if (["BTTS", "AMBOS MARCAN", "BOTH TEAMS TO SCORE"].some((k) => token.includes(k))) return "btts";
   if (["1X2", "DC", "DOUBLE CHANCE", "DRAW", "EMPATE"].some((k) => token.includes(k))) return "1x2";
   if (["GOALS", "GOLES", "OVER", "UNDER", "TOTAL"].some((k) => token.includes(k))) return "goals";

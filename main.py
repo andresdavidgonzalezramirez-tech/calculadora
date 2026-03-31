@@ -456,6 +456,7 @@ def upsert_prediction(db: Session, result: Dict[str, Any], run_id: int) -> None:
     existing.es_value_bet = int(result.get("es_value_bet", 0) or 0)
     existing.confianza = result.get("confianza")
     existing.apuestas_fuertes = normalize_or_synthesize_signals(result.get("apuestas_fuertes"), result)
+    existing.market_breakdown = result.get("market_breakdown")
 
     existing.posible_error_cuota = int(result.get("posible_error_cuota", 0) or 0)
     existing.cuota_sospechosa = int(result.get("cuota_sospechosa", 0) or 0)
@@ -646,6 +647,8 @@ def serialize_prediction(p: Prediction) -> Dict[str, Any]:
         "topSignalTier": signal_summary["top_signal_tier"],
         "top_signal_label": signal_summary["top_signal_label"],
         "topSignalLabel": signal_summary["top_signal_label"],
+        "market_breakdown": p.market_breakdown if isinstance(p.market_breakdown, list) else [],
+        "marketBreakdown": p.market_breakdown if isinstance(p.market_breakdown, list) else [],
 
         "probabilidad_implicita_principal": num_or_none(p.probabilidad_implicita_principal, 6),
         "probabilidad_justa_principal": num_or_none(p.probabilidad_justa_principal, 6),
@@ -699,6 +702,8 @@ def classify_market_family(*aliases: Any) -> str:
         return "cards"
     if any(k in token for k in ["SHOTS", "SHOT", "SOT", "TIROS", "REMATES", "PUERTA"]):
         return "shots"
+    if any(k in token for k in ["TEAM", "MARCARA", "GOLES EQUIPO", "SCORE YES"]):
+        return "goals"
     if any(k in token for k in ["BTTS", "AMBOS MARCAN", "BOTH TEAMS TO SCORE"]):
         return "btts"
     if any(k in token for k in ["1X2", "DC", "DOUBLE CHANCE", "HOME WIN", "AWAY WIN", "EMPATE", "DRAW"]):
@@ -790,6 +795,21 @@ def build_market_telemetry(serialized: Dict[str, Any], latest_odds: Optional[Odd
             "data_quality": num_or_none(serialized.get("data_quality"), 4),
         })
 
+    for row in serialized.get("market_breakdown") or []:
+        if not isinstance(row, dict):
+            continue
+        add_market(
+            str(row.get("code") or "N/D"),
+            str(row.get("mercado") or row.get("market") or "Mercado"),
+            row.get("jugada"),
+            num_or_none(row.get("prob")),
+            num_or_none(row.get("cuota")),
+            num_or_none(row.get("edge")),
+            num_or_none(row.get("ev")),
+            "market_breakdown",
+            subtype=f"line_{row.get('line')}" if row.get("line") is not None else "breakdown",
+        )
+
     # Mercado principal y señales.
     add_market(
         str(serialized.get("mercado_principal") or "1X2_MAIN"),
@@ -813,16 +833,21 @@ def build_market_telemetry(serialized: Dict[str, Any], latest_odds: Optional[Odd
         add_market(code, str(market_name), signal.get("jugada"), model_prob, odds, edge, ev, "apuestas_fuertes", subtype="signal")
 
     if latest_odds:
+        breakdown_probs = {
+            str(item.get("code")): num_or_none(item.get("prob"))
+            for item in (serialized.get("market_breakdown") or [])
+            if isinstance(item, dict)
+        }
         odds_map = [
             ("O75_CORNERS", "Over 7.5 Corners", latest_odds.over75_corners, num_or_none(serialized.get("over75_corners")), "corners"),
             ("O85_CORNERS", "Over 8.5 Corners", latest_odds.over85_corners, num_or_none(serialized.get("over85_corners")), "corners"),
             ("O95_CORNERS", "Over 9.5 Corners", latest_odds.over95_corners, num_or_none(serialized.get("over95_corners")), "corners"),
             ("O35_CARDS", "Over 3.5 Cards", latest_odds.over35_cards, num_or_none(serialized.get("over35_tarjetas")), "cards"),
             ("O45_CARDS", "Over 4.5 Cards", latest_odds.over45_cards, num_or_none(serialized.get("over45_tarjetas")), "cards"),
-            ("SHOTS_HOME", "Shots Home", latest_odds.shots_home, None, "shots"),
-            ("SHOTS_AWAY", "Shots Away", latest_odds.shots_away, None, "shots"),
-            ("SOT_HOME", "Shots on target Home", latest_odds.sot_home, None, "shots"),
-            ("SOT_AWAY", "Shots on target Away", latest_odds.sot_away, None, "shots"),
+            ("SHOTS_HOME", "Shots Home", latest_odds.shots_home, breakdown_probs.get("SHOTS_HOME"), "shots"),
+            ("SHOTS_AWAY", "Shots Away", latest_odds.shots_away, breakdown_probs.get("SHOTS_AWAY"), "shots"),
+            ("SOT_HOME", "Shots on target Home", latest_odds.sot_home, breakdown_probs.get("SOT_HOME"), "shots"),
+            ("SOT_AWAY", "Shots on target Away", latest_odds.sot_away, breakdown_probs.get("SOT_AWAY"), "shots"),
         ]
         for code, market, odds, model_prob, subtype in odds_map:
             implied = safe_ratio(1.0, odds) if odds and odds > 1 else None
