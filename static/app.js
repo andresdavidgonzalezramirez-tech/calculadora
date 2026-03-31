@@ -45,12 +45,18 @@ const FAMILY_LABELS = {
   shots: "Shots",
   secondary: "Secondary",
 };
+const LIVE_FIXTURE_STATUSES = new Set(["1H", "HT", "2H", "LIVE"]);
+const FINISHED_FIXTURE_STATUSES = new Set(["FT", "AET", "PEN", "CANC", "ABD", "PST"]);
 
 const q = (id) => document.getElementById(id);
 const toNumber = (v) => (v === null || v === undefined || v === "" ? null : Number.isFinite(Number(v)) ? Number(v) : null);
 const isFuture = (iso) => Number.isFinite(Date.parse(iso || "")) && Date.parse(iso) >= Date.now();
 const dateLabel = (iso) => (!iso ? "Hora no informada" : new Intl.DateTimeFormat("es-ES", { dateStyle: "medium", timeStyle: "short" }).format(new Date(iso)));
-const countdownLabel = (iso) => {
+const normalizeStatus = (value) => String(value || "").trim().toUpperCase();
+const countdownLabel = (iso, status) => {
+  const normalizedStatus = normalizeStatus(status);
+  if (LIVE_FIXTURE_STATUSES.has(normalizedStatus)) return `En curso (${normalizedStatus})`;
+  if (FINISHED_FIXTURE_STATUSES.has(normalizedStatus)) return `Finalizado (${normalizedStatus})`;
   const t = Date.parse(iso || "");
   if (!Number.isFinite(t)) return "Sin countdown";
   const d = t - Date.now();
@@ -179,7 +185,7 @@ function createOpportunityCard(opp) {
   node.querySelector(".market-code").textContent = `${opp.code} · ${opp.partido || "Partido"}`;
   node.querySelector(".market-name").textContent = `${opp.market} (${opp.family}) · ${opp.liga || "N/D"} · ${opp.pais || "N/D"}`;
   node.querySelector(".card-badges").innerHTML = opportunityBadges(opp);
-  node.querySelector(".play").textContent = `Pick: ${opp.pick} · ${dateLabel(opp.hora)} · ${countdownLabel(opp.hora)}`;
+  node.querySelector(".play").textContent = `Pick: ${opp.pick} · ${dateLabel(opp.hora)} · ${countdownLabel(opp.hora, opp.fixture_status_current || opp.estado)}`;
 
   const oddsLabel = fmtDecimal(opp.odds, 2) || "N/D";
   const modelLabel = toPercent(opp.model_prob, 1) || "N/D";
@@ -327,7 +333,7 @@ function renderMatchRadar(radarRows) {
     card.className = "match-card";
     const included = (row.oportunidades_incluidas || []).map(normalizeOpportunity);
     const excluded = (row.oportunidades_excluidas || []).map(normalizeOpportunity);
-    card.innerHTML = `<div class="match-head"><strong>${row.equipos?.local || "Local"} vs ${row.equipos?.visitante || "Visitante"}</strong><span>${row.liga || "N/D"} · ${row.pais || "N/D"}</span><span>${dateLabel(row.hora)} · ${countdownLabel(row.hora)}</span><span>Familias: ${(row.familias_detectadas || []).join(", ") || "N/D"}</span></div>`;
+    card.innerHTML = `<div class="match-head"><strong>${row.equipos?.local || "Local"} vs ${row.equipos?.visitante || "Visitante"}</strong><span>${row.liga || "N/D"} · ${row.pais || "N/D"}</span><span>${dateLabel(row.hora)} · ${countdownLabel(row.hora, row.fixture_status_current || row.estado)}</span><span>Familias: ${(row.familias_detectadas || []).join(", ") || "N/D"}</span></div>`;
 
     const details = document.createElement("details");
     details.innerHTML = `<summary>Trazabilidad: incluidos, descartes y telemetría</summary>`;
@@ -365,6 +371,7 @@ function withFixtureContext(opps, matchMap) {
       liga: opp.liga || m.liga,
       partido: opp.partido || `${m.local || "Local"} vs ${m.visitante || "Visitante"}`,
       hora: opp.hora || m.hora,
+      fixture_status_current: opp.fixture_status_current || m.fixture_status_current || m.estado,
     };
   });
 }

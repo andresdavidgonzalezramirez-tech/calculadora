@@ -71,6 +71,31 @@ MARKET_FAMILY_RULES = [
     ("shots", ("SHOT", "SOT", "TIRO", "PUERTA")),
 ]
 
+VISIBLE_FIXTURE_STATUSES = {"NS", "1H", "HT", "2H", "LIVE"}
+HIDDEN_FIXTURE_STATUSES = {"FT", "AET", "PEN", "CANC", "ABD", "PST"}
+
+
+def normalize_fixture_status(status: Optional[str]) -> Optional[str]:
+    if status is None:
+        return None
+    normalized = str(status).strip().upper()
+    return normalized or None
+
+
+def visible_fixture_status_expression():
+    fixture_status_subquery = (
+        select(Fixture.status_short)
+        .where(Fixture.fixture_id == Prediction.fixture_id)
+        .scalar_subquery()
+    )
+    return func.upper(func.trim(func.coalesce(fixture_status_subquery, Prediction.estado, "")))
+
+
+def apply_visible_fixture_filter(stmt):
+    status_expr = visible_fixture_status_expression()
+    return stmt.where(status_expr.in_(VISIBLE_FIXTURE_STATUSES))
+
+
 
 def infer_market_family(code: Optional[str], market: Optional[str]) -> str:
     token = f"{code or ''} {market or ''}".upper()
@@ -94,6 +119,7 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
     for row in rows_sorted:
         fixture_id = int(row.fixture_id)
         fixture_key = str(fixture_id)
+        fixture_status_current = normalize_fixture_status(row.estado)
         market_telemetry[fixture_key] = {}
 
         breakdown = row.market_breakdown if isinstance(row.market_breakdown, list) else []
@@ -120,6 +146,7 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 "pais": row.pais or "",
                 "liga": row.liga or "",
                 "hora": row.hora.isoformat() if row.hora else None,
+                "fixture_status_current": fixture_status_current,
                 "code": item.get("code") or f"MARKET_{index + 1}",
                 "market": item.get("mercado") or item.get("code") or "N/D",
                 "pick": item.get("jugada") or "N/D",
@@ -176,6 +203,7 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
             "liga": row.liga or "",
             "pais": row.pais or "",
             "hora": row.hora.isoformat() if row.hora else None,
+            "fixture_status_current": fixture_status_current,
             "equipos": {"local": row.local or "", "visitante": row.visitante or ""},
             "familias_detectadas": sorted(detected_families),
             "oportunidades_incluidas": included,
@@ -560,7 +588,9 @@ def store_pricing_alert(db: Session, result: Dict[str, Any], run_id: int) -> Non
     )
 
 
-def serialize_prediction(p: Prediction) -> Dict[str, Any]:
+def serialize_prediction(p: Prediction, fixture_status_current: Optional[str] = None) -> Dict[str, Any]:
+    status_current = normalize_fixture_status(fixture_status_current) or normalize_fixture_status(p.estado)
+
     payload = {
         "id": int(p.fixture_id),
         "fixture_id": int(p.fixture_id),
@@ -570,6 +600,8 @@ def serialize_prediction(p: Prediction) -> Dict[str, Any]:
         "pais": none_if_missing(p.pais),
         "hora": p.hora.isoformat() if p.hora else None,
         "estado": none_if_missing(p.estado),
+        "fixture_status_current": status_current,
+        "fixtureStatusCurrent": status_current,
         "local": none_if_missing(p.local),
         "visitante": none_if_missing(p.visitante),
         "predicted_winner": none_if_missing(p.predicted_winner),
@@ -918,9 +950,10 @@ def get_predictions(
     only_value: int = Query(0, ge=0, le=1),
     min_prob: int = Query(0, ge=0, le=100),
     limit: int = Query(200, ge=1, le=2000),
+    visible_only: int = Query(0, ge=0, le=1),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Prediction)
+    stmt = select(Prediction, visible_fixture_status_expression().label("fixture_status_current"))
     if liga_id:
         stmt = stmt.where(Prediction.liga_id == liga_id)
     if only_value:
@@ -928,9 +961,12 @@ def get_predictions(
     if min_prob > 0:
         stmt = stmt.where(Prediction.prob_apuesta >= (min_prob / 100.0))
 
+    if visible_only:
+        stmt = apply_visible_fixture_filter(stmt)
+
     stmt = stmt.order_by(asc(Prediction.hora), asc(Prediction.liga)).limit(limit)
-    rows = db.execute(stmt).scalars().all()
-    return {"predictions": [serialize_prediction(r) for r in rows]}
+    rows = db.execute(stmt).all()
+    return {"predictions": [serialize_prediction(prediction, fixture_status) for prediction, fixture_status in rows]}
 
 
 @app.get("/panel/partidos")
@@ -941,7 +977,7 @@ def panel_partidos(
     limit: int = Query(200, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
-    data = get_predictions(liga_id=liga_id, only_value=only_value, min_prob=min_prob, limit=limit, db=db)
+    data = get_predictions(liga_id=liga_id, only_value=only_value, min_prob=min_prob, limit=limit, visible_only=1, db=db)
     return {"partidos": data["predictions"], "count": len(data["predictions"])}
 
 
@@ -952,7 +988,7 @@ def panel_apuestas_fuertes(
     limit: int = Query(300, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Prediction).where(Prediction.prob_apuesta >= (min_prob / 100.0))
+    stmt = apply_visible_fixture_filter(select(Prediction).where(Prediction.prob_apuesta >= (min_prob / 100.0)))
     if only_value:
         stmt = stmt.where(Prediction.es_value_bet == 1)
 
@@ -997,6 +1033,7 @@ def panel_dashboard(
     if only_value:
         stmt = stmt.where(Prediction.es_value_bet == 1)
 
+    stmt = apply_visible_fixture_filter(stmt)
     stmt = stmt.order_by(asc(Prediction.hora), asc(Prediction.liga)).limit(limit)
     rows = db.execute(stmt).scalars().all()
     return build_dashboard_payload(rows, limit=limit)
@@ -1016,7 +1053,7 @@ def alerts(limit: int = Query(500, ge=1, le=5000), min_level: int = Query(1, ge=
 
 @app.get("/panel/resumen")
 def panel_resumen(liga_id: int = Query(0), only_value: int = Query(0), db: Session = Depends(get_db)):
-    stmt = select(Prediction)
+    stmt = apply_visible_fixture_filter(select(Prediction))
     if liga_id:
         stmt = stmt.where(Prediction.liga_id == liga_id)
     if only_value:
