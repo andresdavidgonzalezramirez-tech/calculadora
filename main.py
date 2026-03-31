@@ -1044,9 +1044,14 @@ def sorted_opportunities(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(
         rows,
         key=lambda x: (
-            x.get("ev") if x.get("ev") is not None else -999,
-            x.get("rank") if x.get("rank") is not None else (x.get("score") if x.get("score") is not None else -999),
+            x.get("close_probability") if x.get("close_probability") is not None else (x.get("model_prob") if x.get("model_prob") is not None else -999),
+            x.get("model_prob") if x.get("model_prob") is not None else -999,
+            x.get("score") if x.get("score") is not None else -999,
+            x.get("rank") if x.get("rank") is not None else -999,
+            x.get("market_reliability") if x.get("market_reliability") is not None else -999,
+            x.get("market_stability") if x.get("market_stability") is not None else -999,
             x.get("edge") if x.get("edge") is not None else -999,
+            -(x.get("odds") if x.get("odds") is not None else 99),
         ),
         reverse=True,
     )
