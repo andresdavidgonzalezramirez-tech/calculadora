@@ -11,7 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.orm import Session
 
@@ -325,6 +325,23 @@ class FixtureInput(BaseModel):
     head_to_head: List[Dict[str, Any]] = Field(default_factory=list)
     odds: Dict[str, Any] = Field(default_factory=dict)
     collection_meta: Dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator(
+        "cf_home",
+        "ca_home",
+        "cf_away",
+        "ca_away",
+        "yf_home",
+        "yf_away",
+        "shots_home",
+        "shots_away",
+        "shots_on_target_home",
+        "shots_on_target_away",
+        mode="before",
+    )
+    @classmethod
+    def normalize_nullable_numeric_stats(cls, value: Any) -> Any:
+        return 0 if value is None else value
 
 
 class IngestRunRequest(BaseModel):
@@ -719,6 +736,42 @@ def coerce_predict_payload(payload: Any) -> IngestRunRequest:
     raise HTTPException(status_code=422, detail="Payload inválido. Usa {'fixtures': [...]} o un fixture único.")
 
 
+def _expected_type_for_validation_error(error_type: str) -> str:
+    if error_type in {"float_type", "float_parsing", "int_type", "int_parsing"}:
+        return "number"
+    if error_type == "missing":
+        return "required"
+    return "valid_value"
+
+
+def _format_pydantic_validation_error(exc: ValidationError) -> List[Dict[str, Any]]:
+    invalid_fields: List[Dict[str, Any]] = []
+    for error in exc.errors():
+        loc = ".".join(str(part) for part in error.get("loc", ()))
+        value = error.get("input")
+        error_type = str(error.get("type", "unknown"))
+        message = str(error.get("msg", "Validation error"))
+        expected_type = _expected_type_for_validation_error(error_type)
+        logger.warning(
+            "Predict payload validation failed field=%s value=%r expected=%s error_type=%s message=%s",
+            loc,
+            value,
+            expected_type,
+            error_type,
+            message,
+        )
+        invalid_fields.append(
+            {
+                "field": loc,
+                "value": value,
+                "expected": expected_type,
+                "error_type": error_type,
+                "message": message,
+            }
+        )
+    return invalid_fields
+
+
 @app.get("/")
 def root():
     if STATIC_DIR.joinpath("index.html").exists():
@@ -841,9 +894,22 @@ def ingest_run(payload: IngestRunRequest, db: Session = Depends(get_db)):
 
 @app.post("/predict")
 def predict_compat(payload: Any = Body(...), db: Session = Depends(get_db)):
-    request = coerce_predict_payload(payload)
-    response = ingest_run(request, db=db)
-    return response
+    try:
+        request = coerce_predict_payload(payload)
+        response = ingest_run(request, db=db)
+        return response
+    except ValidationError as exc:
+        invalid_fields = _format_pydantic_validation_error(exc)
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "type": "validation_error",
+                    "message": "Payload inválido para /predict",
+                    "invalid_fields": invalid_fields,
+                }
+            },
+        )
 
 
 @app.get("/predictions")
