@@ -139,6 +139,7 @@ class Prediction(Base):
     es_value_bet: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
     confianza: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     apuestas_fuertes: Mapped[Optional[dict]] = mapped_column(JSONType, nullable=True)
+    market_breakdown: Mapped[Optional[dict]] = mapped_column(JSONType, nullable=True)
 
     posible_error_cuota: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
     cuota_sospechosa: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
@@ -247,6 +248,7 @@ REQUIRED_PREDICTION_COLUMNS = {
     "stake_sugerido_unidades": "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS stake_sugerido_unidades NUMERIC(10,4)",
     "market_stability": "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS market_stability NUMERIC(10,4)",
     "market_reliability": "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS market_reliability NUMERIC(10,4)",
+    "market_breakdown": "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS market_breakdown JSONB" if not IS_SQLITE else "",
 }
 
 REQUIRED_ODDS_SNAPSHOT_COLUMNS = {
