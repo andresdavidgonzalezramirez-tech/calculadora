@@ -1,12 +1,14 @@
 import os
 import sys
 from pathlib import Path
+from datetime import datetime, timezone
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_predict_endpoint.db")
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
 
+import db
 import main
 
 
@@ -121,3 +123,113 @@ def test_predict_invalid_numeric_type_returns_422(monkeypatch):
     payload = response.json()
     assert payload["error"]["message"] == "Payload inválido para /predict"
     assert any(item["field"] == "fixtures.0.cf_home" for item in payload["error"]["invalid_fields"])
+
+
+def _seed_prediction_with_status(session, fixture_id, status_short, market_breakdown):
+    now = datetime(2026, 4, 1, 18, 0, tzinfo=timezone.utc)
+    session.merge(
+        main.Fixture(
+            fixture_id=fixture_id,
+            league_id=140,
+            league_name="La Liga",
+            country="Spain",
+            season=2026,
+            fixture_datetime=now,
+            status_short=status_short,
+            status_long=status_short,
+            home_team_id=fixture_id + 10,
+            home_team_name=f"Home {fixture_id}",
+            away_team_id=fixture_id + 20,
+            away_team_name=f"Away {fixture_id}",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    session.merge(
+        main.Prediction(
+            fixture_id=fixture_id,
+            liga_id=140,
+            liga="La Liga",
+            pais="Spain",
+            hora=now,
+            estado=status_short,
+            local=f"Home {fixture_id}",
+            visitante=f"Away {fixture_id}",
+            market_breakdown=market_breakdown,
+            apuestas_fuertes=[],
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+
+def test_panel_dashboard_filters_finished_fixtures_and_all_markets():
+    with db.SessionLocal() as session:
+        session.query(main.Prediction).delete()
+        session.query(main.Fixture).delete()
+
+        _seed_prediction_with_status(
+            session,
+            fixture_id=2001,
+            status_short="NS",
+            market_breakdown=[
+                {"code": "OVER25", "mercado": "Goles", "jugada": "Over 2.5", "prob": 0.62, "cuota": 1.9, "probabilidad_implicita": 0.52, "edge": 0.10, "ev": 0.17, "market_complete": True},
+            ],
+        )
+        _seed_prediction_with_status(
+            session,
+            fixture_id=2002,
+            status_short="LIVE",
+            market_breakdown=[
+                {"code": "O35_CARDS", "mercado": "Tarjetas", "jugada": "Over 3.5 tarjetas", "prob": 0.60, "cuota": 1.95, "probabilidad_implicita": 0.51, "edge": 0.09, "ev": 0.15, "market_complete": True},
+            ],
+        )
+        _seed_prediction_with_status(
+            session,
+            fixture_id=2003,
+            status_short="FT",
+            market_breakdown=[
+                {"code": "O85_CORNERS", "mercado": "Corners", "jugada": "Over 8.5 corners", "prob": 0.61, "cuota": 2.0, "probabilidad_implicita": 0.50, "edge": 0.11, "ev": 0.16, "market_complete": True},
+                {"code": "O35_CARDS", "mercado": "Tarjetas", "jugada": "Over 3.5 tarjetas", "prob": 0.58, "cuota": 1.88, "probabilidad_implicita": 0.53, "edge": 0.05, "ev": 0.09, "market_complete": True},
+            ],
+        )
+        _seed_prediction_with_status(
+            session,
+            fixture_id=2004,
+            status_short="AET",
+            market_breakdown=[
+                {"code": "SHOTS_HOME", "mercado": "Shots", "jugada": "Home shots", "prob": 0.59, "cuota": 1.92, "probabilidad_implicita": 0.52, "edge": 0.07, "ev": 0.12, "market_complete": True},
+            ],
+        )
+        _seed_prediction_with_status(
+            session,
+            fixture_id=2005,
+            status_short="PEN",
+            market_breakdown=[
+                {"code": "SOT_AWAY", "mercado": "Shots on target", "jugada": "Away SOT", "prob": 0.57, "cuota": 1.93, "probabilidad_implicita": 0.51, "edge": 0.06, "ev": 0.10, "market_complete": True},
+            ],
+        )
+        session.commit()
+
+    client = TestClient(main.app)
+    response = client.get("/panel/dashboard?limit=100")
+    assert response.status_code == 200
+    payload = response.json()
+
+    visible_fixture_ids = {match["fixture_id"] for match in payload["partidos"]}
+    assert 2001 in visible_fixture_ids  # NS visible
+    assert 2002 in visible_fixture_ids  # LIVE visible
+    assert 2003 not in visible_fixture_ids  # FT hidden
+    assert 2004 not in visible_fixture_ids  # AET hidden
+    assert 2005 not in visible_fixture_ids  # PEN hidden
+
+    opportunity_fixture_ids = {opp["fixture_id"] for opp in payload["top_opportunities"]}
+    assert 2001 in opportunity_fixture_ids
+    assert 2002 in opportunity_fixture_ids
+    assert 2003 not in opportunity_fixture_ids
+    assert 2004 not in opportunity_fixture_ids
+    assert 2005 not in opportunity_fixture_ids
+
+    hidden_markets = {(opp["fixture_id"], opp["code"]) for opp in payload["top_opportunities"]}
+    assert (2003, "O85_CORNERS") not in hidden_markets
+    assert (2003, "O35_CARDS") not in hidden_markets
