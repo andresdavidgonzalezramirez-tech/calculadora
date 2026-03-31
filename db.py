@@ -244,55 +244,66 @@ REQUIRED_TABLES = {
 }
 
 REQUIRED_PREDICTION_COLUMNS = {
-    "over75_corners": "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS over75_corners NUMERIC(10,6)",
-    "stake_sugerido_unidades": "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS stake_sugerido_unidades NUMERIC(10,4)",
-    "market_stability": "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS market_stability NUMERIC(10,4)",
-    "market_reliability": "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS market_reliability NUMERIC(10,4)",
-    "market_breakdown": "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS market_breakdown JSONB" if not IS_SQLITE else "",
+    "over75_corners": "NUMERIC(10,6)",
+    "stake_sugerido_unidades": "NUMERIC(10,4)",
+    "market_stability": "NUMERIC(10,4)",
+    "market_reliability": "NUMERIC(10,4)",
+    "market_breakdown": "JSON" if IS_SQLITE else "JSONB",
 }
 
 REQUIRED_ODDS_SNAPSHOT_COLUMNS = {
-    "bookmaker_id": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS bookmaker_id BIGINT",
-    "bookmaker_name": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS bookmaker_name TEXT",
-    "odds_home": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS odds_home NUMERIC(10,4)",
-    "odds_draw": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS odds_draw NUMERIC(10,4)",
-    "odds_away": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS odds_away NUMERIC(10,4)",
-    "over15": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS over15 NUMERIC(10,4)",
-    "odds_over25": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS odds_over25 NUMERIC(10,4)",
-    "over35": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS over35 NUMERIC(10,4)",
-    "under45": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS under45 NUMERIC(10,4)",
-    "odds_btts_yes": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS odds_btts_yes NUMERIC(10,4)",
-    "dc_1x": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS dc_1x NUMERIC(10,4)",
-    "dc_x2": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS dc_x2 NUMERIC(10,4)",
-    "dc_12": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS dc_12 NUMERIC(10,4)",
-    "over75_corners": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS over75_corners NUMERIC(10,4)",
-    "over85_corners": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS over85_corners NUMERIC(10,4)",
-    "over95_corners": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS over95_corners NUMERIC(10,4)",
-    "over35_cards": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS over35_cards NUMERIC(10,4)",
-    "over45_cards": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS over45_cards NUMERIC(10,4)",
-    "shots_home": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS shots_home NUMERIC(10,4)",
-    "shots_away": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS shots_away NUMERIC(10,4)",
-    "sot_home": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS sot_home NUMERIC(10,4)",
-    "sot_away": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS sot_away NUMERIC(10,4)",
-    "raw_payload": "ALTER TABLE odds_snapshot ADD COLUMN IF NOT EXISTS raw_payload JSONB" if not IS_SQLITE else "",
+    "bookmaker_id": "BIGINT",
+    "bookmaker_name": "TEXT",
+    "odds_home": "NUMERIC(10,4)",
+    "odds_draw": "NUMERIC(10,4)",
+    "odds_away": "NUMERIC(10,4)",
+    "over15": "NUMERIC(10,4)",
+    "odds_over25": "NUMERIC(10,4)",
+    "over35": "NUMERIC(10,4)",
+    "under45": "NUMERIC(10,4)",
+    "odds_btts_yes": "NUMERIC(10,4)",
+    "dc_1x": "NUMERIC(10,4)",
+    "dc_x2": "NUMERIC(10,4)",
+    "dc_12": "NUMERIC(10,4)",
+    "over75_corners": "NUMERIC(10,4)",
+    "over85_corners": "NUMERIC(10,4)",
+    "over95_corners": "NUMERIC(10,4)",
+    "over35_cards": "NUMERIC(10,4)",
+    "over45_cards": "NUMERIC(10,4)",
+    "shots_home": "NUMERIC(10,4)",
+    "shots_away": "NUMERIC(10,4)",
+    "sot_home": "NUMERIC(10,4)",
+    "sot_away": "NUMERIC(10,4)",
+    "raw_payload": "JSON" if IS_SQLITE else "JSONB",
 }
 
 REQUIRED_PRICING_ALERTS_COLUMNS = {
-    "alert_title": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS alert_title TEXT",
-    "mercado": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS mercado TEXT",
-    "jugada": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS jugada TEXT",
-    "cuota": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS cuota NUMERIC(10,4)",
-    "prob_modelo": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS prob_modelo NUMERIC(10,6)",
-    "prob_implicita": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS prob_implicita NUMERIC(10,6)",
-    "prob_justa": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS prob_justa NUMERIC(10,6)",
-    "edge": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS edge NUMERIC(10,6)",
-    "confianza": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS confianza INTEGER",
-    "es_value_bet": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS es_value_bet INTEGER DEFAULT 0",
-    "posible_error_cuota": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS posible_error_cuota INTEGER DEFAULT 0",
-    "cuota_sospechosa": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS cuota_sospechosa INTEGER DEFAULT 0",
-    "oportunidad_detectada": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS oportunidad_detectada INTEGER DEFAULT 0",
-    "run_id": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS run_id BIGINT",
-    "raw_payload": "ALTER TABLE pricing_alerts ADD COLUMN IF NOT EXISTS raw_payload JSONB" if not IS_SQLITE else "",
+    "alert_title": "TEXT",
+    "mercado": "TEXT",
+    "jugada": "TEXT",
+    "cuota": "NUMERIC(10,4)",
+    "prob_modelo": "NUMERIC(10,6)",
+    "prob_implicita": "NUMERIC(10,6)",
+    "prob_justa": "NUMERIC(10,6)",
+    "edge": "NUMERIC(10,6)",
+    "confianza": "INTEGER",
+    "es_value_bet": "INTEGER DEFAULT 0",
+    "posible_error_cuota": "INTEGER DEFAULT 0",
+    "cuota_sospechosa": "INTEGER DEFAULT 0",
+    "oportunidad_detectada": "INTEGER DEFAULT 0",
+    "run_id": "BIGINT",
+    "raw_payload": "JSON" if IS_SQLITE else "JSONB",
+}
+
+REQUIRED_INDEXES = {
+    "ix_fixtures_league_id": ("fixtures", ("league_id",)),
+    "ix_fixtures_fixture_datetime": ("fixtures", ("fixture_datetime",)),
+    "ix_fixtures_status_short": ("fixtures", ("status_short",)),
+    "ix_predictions_liga_id": ("predictions", ("liga_id",)),
+    "ix_predictions_hora": ("predictions", ("hora",)),
+    "ix_odds_snapshot_fixture_id": ("odds_snapshot", ("fixture_id",)),
+    "ix_odds_snapshot_snapshot_at": ("odds_snapshot", ("snapshot_at",)),
+    "ix_pricing_alerts_fixture_id": ("pricing_alerts", ("fixture_id",)),
 }
 
 
@@ -305,17 +316,15 @@ def validate_db_schema() -> None:
 
 
 def ensure_table_columns(table_name: str, required_columns: dict[str, str]) -> None:
-    if IS_SQLITE:
-        return
-
     inspector = inspect(engine)
     existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
-    pending = [sql for name, sql in required_columns.items() if name not in existing_columns and sql]
+    pending = [(name, definition) for name, definition in required_columns.items() if name not in existing_columns and definition]
     if not pending:
         return
 
     with engine.begin() as conn:
-        for sql in pending:
+        for column_name, definition in pending:
+            sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
             conn.execute(text(sql))
 
 
@@ -331,11 +340,23 @@ def ensure_pricing_alerts_columns() -> None:
     ensure_table_columns("pricing_alerts", REQUIRED_PRICING_ALERTS_COLUMNS)
 
 
+def ensure_required_indexes() -> None:
+    inspector = inspect(engine)
+    existing_indexes = {index["name"] for table in REQUIRED_TABLES for index in inspector.get_indexes(table)}
+    with engine.begin() as conn:
+        for index_name, (table_name, columns) in REQUIRED_INDEXES.items():
+            if index_name in existing_indexes:
+                continue
+            joined_columns = ", ".join(columns)
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({joined_columns})"))
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_prediction_columns()
     ensure_odds_snapshot_columns()
     ensure_pricing_alerts_columns()
+    ensure_required_indexes()
     validate_db_schema()
 
 
