@@ -72,12 +72,11 @@ MARKET_FAMILY_RULES = [
     ("shots", ("SHOT", "SOT", "TIRO", "PUERTA")),
 ]
 
-VISIBLE_FIXTURE_STATUSES = {"NS", "1H", "HT", "2H", "LIVE"}
-HIDDEN_FIXTURE_STATUSES = {"FT", "AET", "PEN", "CANC", "ABD", "PST"}
+VISIBLE_FIXTURE_STATUSES = {"NS"}
+HIDDEN_FIXTURE_STATUSES = {"1H", "HT", "2H", "LIVE", "FT", "AET", "PEN", "CANC", "ABD", "PST"}
 DISPLAY_TIMEZONE = ZoneInfo(os.getenv("DISPLAY_TIMEZONE", "Europe/Warsaw"))
 INGEST_DEFAULT_TIMEZONE = ZoneInfo(os.getenv("INGEST_DEFAULT_TIMEZONE", "Europe/Warsaw"))
 UTC_TIMEZONE = ZoneInfo("UTC")
-VISIBILITY_PAST_GRACE = timedelta(hours=2)
 VISIBILITY_FUTURE_WINDOW = timedelta(hours=int(os.getenv("VISIBILITY_FUTURE_WINDOW_HOURS", "72")))
 
 
@@ -111,6 +110,14 @@ def fixture_datetime_expression():
     return func.coalesce(fixture_dt_subquery, Prediction.hora)
 
 
+def apply_visibility_time_filter(stmt, reference_now_utc: datetime):
+    fixture_dt_expr = fixture_datetime_expression()
+    return stmt.where(
+        fixture_dt_expr >= reference_now_utc,
+        fixture_dt_expr <= (reference_now_utc + VISIBILITY_FUTURE_WINDOW),
+    )
+
+
 def now_utc() -> datetime:
     return datetime.now(ZoneInfo("UTC"))
 
@@ -136,7 +143,7 @@ def is_fixture_visible(status: Optional[str], fixture_dt: Optional[datetime], re
 
     dt_utc = coerce_utc_datetime(fixture_dt)
     if dt_utc is not None:
-        if dt_utc < reference_now_utc - VISIBILITY_PAST_GRACE:
+        if dt_utc < reference_now_utc:
             return False
         if dt_utc > reference_now_utc + VISIBILITY_FUTURE_WINDOW:
             return False
@@ -996,6 +1003,7 @@ def get_predictions(
     visible_only: int = Query(0, ge=0, le=1),
     db: Session = Depends(get_db),
 ):
+    reference_now_utc = now_utc()
     stmt = select(
         Prediction,
         visible_fixture_status_expression().label("fixture_status_current"),
@@ -1010,10 +1018,10 @@ def get_predictions(
 
     if visible_only:
         stmt = apply_visible_fixture_filter(stmt)
+        stmt = apply_visibility_time_filter(stmt, reference_now_utc)
 
     stmt = stmt.order_by(asc(Prediction.hora), asc(Prediction.liga)).limit(limit)
     rows = db.execute(stmt).all()
-    reference_now_utc = now_utc()
     predictions: List[Dict[str, Any]] = []
     for prediction, fixture_status, fixture_dt in rows:
         if not is_fixture_visible(fixture_status, fixture_dt, reference_now_utc):
@@ -1043,6 +1051,7 @@ def panel_apuestas_fuertes(
     limit: int = Query(300, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
+    reference_now_utc = now_utc()
     stmt = apply_visible_fixture_filter(
         select(
             Prediction,
@@ -1050,6 +1059,7 @@ def panel_apuestas_fuertes(
             fixture_datetime_expression().label("fixture_datetime_current"),
         ).where(Prediction.prob_apuesta >= (min_prob / 100.0))
     )
+    stmt = apply_visibility_time_filter(stmt, reference_now_utc)
     if only_value:
         stmt = stmt.where(Prediction.es_value_bet == 1)
 
@@ -1061,8 +1071,6 @@ def panel_apuestas_fuertes(
     ).limit(limit)
 
     rows = db.execute(stmt).all()
-    reference_now_utc = now_utc()
-
     apuestas = []
     for p, fixture_status, fixture_dt in rows:
         if not is_fixture_visible(fixture_status, fixture_dt, reference_now_utc):
@@ -1092,6 +1100,7 @@ def panel_dashboard(
     limit: int = Query(300, ge=1, le=3000),
     db: Session = Depends(get_db),
 ):
+    reference_now_utc = now_utc()
     stmt = select(
         Prediction,
         visible_fixture_status_expression().label("fixture_status_current"),
@@ -1103,9 +1112,9 @@ def panel_dashboard(
         stmt = stmt.where(Prediction.es_value_bet == 1)
 
     stmt = apply_visible_fixture_filter(stmt)
+    stmt = apply_visibility_time_filter(stmt, reference_now_utc)
     stmt = stmt.order_by(asc(Prediction.hora), asc(Prediction.liga)).limit(limit)
     rows = db.execute(stmt).all()
-    reference_now_utc = now_utc()
     visible_rows: List[Prediction] = []
     for prediction, fixture_status, fixture_dt in rows:
         if not is_fixture_visible(fixture_status, fixture_dt, reference_now_utc):
@@ -1129,6 +1138,7 @@ def alerts(limit: int = Query(500, ge=1, le=5000), min_level: int = Query(1, ge=
 
 @app.get("/panel/resumen")
 def panel_resumen(liga_id: int = Query(0), only_value: int = Query(0), db: Session = Depends(get_db)):
+    reference_now_utc = now_utc()
     stmt = apply_visible_fixture_filter(
         select(
             Prediction,
@@ -1136,13 +1146,13 @@ def panel_resumen(liga_id: int = Query(0), only_value: int = Query(0), db: Sessi
             fixture_datetime_expression().label("fixture_datetime_current"),
         )
     )
+    stmt = apply_visibility_time_filter(stmt, reference_now_utc)
     if liga_id:
         stmt = stmt.where(Prediction.liga_id == liga_id)
     if only_value:
         stmt = stmt.where(Prediction.es_value_bet == 1)
 
     rows = db.execute(stmt).all()
-    reference_now_utc = now_utc()
     visible_rows = [
         prediction
         for prediction, fixture_status, fixture_dt in rows
