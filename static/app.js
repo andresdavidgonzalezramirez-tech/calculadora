@@ -222,7 +222,7 @@ function createOpportunityCard(opp) {
   if (!opp.market_complete) traceNotes.push(opp.completeness_reason || "mercado_detectado_sin_pricing_completo");
   if (opp.reason_discard) traceNotes.push(`Descarte: ${opp.reason_discard}`);
   const familyReason = ["corners", "cards"].includes(opp.family) ? " · Priorizado por mercado de alta repetibilidad" : "";
-  node.querySelector(".trace").textContent = `Fuente: ${opp.source || "N/D"} · Inclusión: ${opp.reason_inclusion || "N/D"}${familyReason}${traceNotes.length ? ` · ${traceNotes.join(" · ")}` : ""}`;
+  node.querySelector(".trace").textContent = `Fuente: ${opp.source || "N/D"} · Inclusión: ${opp.reason_inclusion || "N/D"} · Estado: ${opp.selection_status || "N/D"} (${opp.selection_reason || "sin_motivo"})${familyReason}${traceNotes.length ? ` · ${traceNotes.join(" · ")}` : ""}`;
   return node;
 }
 

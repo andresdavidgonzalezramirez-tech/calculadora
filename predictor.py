@@ -1119,7 +1119,7 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     out: List[Dict[str, Any]] = []
     for item in ordered:
-        is_ok, reason = _is_conservative_candidate(item, ultra=False)
+        is_ok, _reason = _is_conservative_candidate(item, ultra=False)
         if not is_ok:
             continue
 
