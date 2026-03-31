@@ -55,17 +55,12 @@ const toNumber = (v) => (v === null || v === undefined || v === "" ? null : Numb
 const isFuture = (iso) => Number.isFinite(Date.parse(iso || "")) && Date.parse(iso) >= Date.now();
 const dateLabel = (iso) => (!iso ? "Hora no informada" : new Intl.DateTimeFormat("es-ES", { dateStyle: "medium", timeStyle: "short", timeZone: DISPLAY_TIMEZONE }).format(new Date(iso)));
 const normalizeStatus = (value) => String(value || "").trim().toUpperCase();
+const isRenderableFixtureStatus = (status) => LIVE_FIXTURE_STATUSES.has(normalizeStatus(status)) || SCHEDULED_FIXTURE_STATUSES.has(normalizeStatus(status));
 const countdownLabel = (iso, status) => {
   const normalizedStatus = normalizeStatus(status);
-  if (LIVE_FIXTURE_STATUSES.has(normalizedStatus)) return `En curso (${normalizedStatus})`;
-  if (FINISHED_FIXTURE_STATUSES.has(normalizedStatus)) return `Finalizado (${normalizedStatus})`;
-  if (SCHEDULED_FIXTURE_STATUSES.has(normalizedStatus)) return `Programado (${normalizedStatus})`;
-  const t = Date.parse(iso || "");
-  if (!Number.isFinite(t)) return "Sin countdown";
-  const d = t - Date.now();
-  if (d <= 0) return "En curso / iniciado";
-  const min = Math.floor(d / 60000);
-  return `En ${Math.floor(min / 60)}h ${min % 60}m`;
+  if (LIVE_FIXTURE_STATUSES.has(normalizedStatus)) return "En vivo";
+  if (SCHEDULED_FIXTURE_STATUSES.has(normalizedStatus)) return "Próximo";
+  return "";
 };
 
 function toPercent(value, digits = 1) {
@@ -584,11 +579,17 @@ async function refreshDashboard() {
   setRefreshState("loading", "Cargando");
   try {
     const payload = await fetchJson("/panel/dashboard?limit=3000");
-    state.matches = payload.partidos || [];
-    const unified = buildUnifiedOpportunities(payload);
+    state.matches = (payload.partidos || []).filter((m) => isRenderableFixtureStatus(m.fixture_status_current || m.estado));
+    const filteredPayload = {
+      ...payload,
+      partidos: state.matches,
+      match_radar: (payload.match_radar || []).filter((m) => isRenderableFixtureStatus(m.fixture_status_current || m.estado)),
+      oportunidades_ev: (payload.oportunidades_ev || []).filter((o) => isRenderableFixtureStatus(o.fixture_status_current || o.estado)),
+    };
+    const unified = buildUnifiedOpportunities(filteredPayload);
     state.opportunities = unified.complete;
     state.incompleteOpportunities = unified.incomplete;
-    state.matchRadar = payload.match_radar || [];
+    state.matchRadar = filteredPayload.match_radar;
     state.byFamily = payload.top_by_family || {};
     state.countryTree = payload.paises || [];
     state.summary = computeSummary(payload);
