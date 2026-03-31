@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.orm import Session
@@ -24,7 +29,21 @@ from db import (
 from predictor import calcular_alerta_pricing, calcular_partido
 
 
-app = FastAPI(title="Proyecto Apuestas Reales", version="4.2.0")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+logger = logging.getLogger("calculadora.api")
+
+
+def create_app() -> FastAPI:
+    api = FastAPI(title="Proyecto Apuestas Reales", version="4.3.0")
+    init_db()
+    return api
+
+
+app = create_app()
 
 raw_origins = os.getenv("CORS_ORIGINS", "*").strip()
 allow_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()] or ["*"]
@@ -38,7 +57,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-init_db()
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 def parse_dt(value: Any) -> Optional[datetime]:
@@ -142,10 +163,6 @@ class IngestRunRequest(BaseModel):
     workflow_name: str = "bankenban_ingest"
     trigger_type: str = "schedule"
     persist: bool = True
-
-
-class PredictCompatRequest(BaseModel):
-    fixtures: List[FixtureInput] = Field(default_factory=list)
 
 
 def upsert_fixture(db: Session, item: FixtureInput) -> None:
@@ -534,6 +551,8 @@ def coerce_predict_payload(payload: Any) -> IngestRunRequest:
 
 @app.get("/")
 def root():
+    if STATIC_DIR.joinpath("index.html").exists():
+        return FileResponse(STATIC_DIR / "index.html")
     return {
         "status": "ok",
         "health": "/health",
@@ -547,6 +566,31 @@ def root():
         "alerts": "/alerts",
         "value_bets": "/value-bets",
     }
+
+
+@app.exception_handler(HTTPException)
+def http_exception_handler(_: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"type": "http_error", "detail": exc.detail}},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+def validation_exception_handler(_: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"error": {"type": "validation_error", "detail": exc.errors()}},
+    )
+
+
+@app.exception_handler(Exception)
+def unhandled_exception_handler(_: Request, exc: Exception):
+    logger.exception("Unhandled server error")
+    return JSONResponse(
+        status_code=500,
+        content={"error": {"type": "server_error", "detail": "Internal server error"}},
+    )
 
 
 @app.get("/health")
@@ -603,6 +647,13 @@ def ingest_run(payload: IngestRunRequest, db: Session = Depends(get_db)):
         run.notes = " | ".join(errors[:10]) if errors else f"Procesados={processed}, omitidos={skipped}"
 
         db.commit()
+        logger.info(
+            "Ingest finalizado run_id=%s total=%s procesados=%s omitidos=%s",
+            run.run_id,
+            len(payload.fixtures),
+            processed,
+            skipped,
+        )
         return {
             "run_id": run.run_id,
             "fixtures_total": len(payload.fixtures),
@@ -613,11 +664,12 @@ def ingest_run(payload: IngestRunRequest, db: Session = Depends(get_db)):
         }
     except Exception as exc:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error en ingest/run: {exc}")
+        logger.exception("Error en ingest/run")
+        raise HTTPException(status_code=500, detail="Error interno en ingest/run")
 
 
 @app.post("/predict")
-def predict_compat(payload: Dict[str, Any], db: Session = Depends(get_db)):
+def predict_compat(payload: Any = Body(...), db: Session = Depends(get_db)):
     request = coerce_predict_payload(payload)
     response = ingest_run(request, db=db)
     return response
@@ -625,10 +677,10 @@ def predict_compat(payload: Dict[str, Any], db: Session = Depends(get_db)):
 
 @app.get("/predictions")
 def get_predictions(
-    liga_id: int = Query(0),
-    only_value: int = Query(0),
-    min_prob: int = Query(0),
-    limit: int = Query(1000),
+    liga_id: int = Query(0, ge=0),
+    only_value: int = Query(0, ge=0, le=1),
+    min_prob: int = Query(0, ge=0, le=100),
+    limit: int = Query(200, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
     stmt = select(Prediction)
@@ -646,10 +698,10 @@ def get_predictions(
 
 @app.get("/panel/partidos")
 def panel_partidos(
-    liga_id: int = Query(0),
-    only_value: int = Query(0),
-    min_prob: int = Query(0),
-    limit: int = Query(1000),
+    liga_id: int = Query(0, ge=0),
+    only_value: int = Query(0, ge=0, le=1),
+    min_prob: int = Query(0, ge=0, le=100),
+    limit: int = Query(200, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
     data = get_predictions(liga_id=liga_id, only_value=only_value, min_prob=min_prob, limit=limit, db=db)
@@ -658,9 +710,9 @@ def panel_partidos(
 
 @app.get("/panel/apuestas-fuertes")
 def panel_apuestas_fuertes(
-    min_prob: int = Query(70),
-    only_value: int = Query(0),
-    limit: int = Query(500),
+    min_prob: int = Query(70, ge=0, le=100),
+    only_value: int = Query(0, ge=0, le=1),
+    limit: int = Query(300, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
     stmt = select(Prediction).where(Prediction.prob_apuesta >= (min_prob / 100.0))
@@ -696,7 +748,7 @@ def panel_apuestas_fuertes(
 
 
 @app.get("/alerts")
-def alerts(limit: int = Query(500), min_level: int = Query(1), db: Session = Depends(get_db)):
+def alerts(limit: int = Query(500, ge=1, le=5000), min_level: int = Query(1, ge=0, le=3), db: Session = Depends(get_db)):
     stmt = (
         select(PricingAlert)
         .where(PricingAlert.alert_level >= min_level)
@@ -737,10 +789,10 @@ def panel_resumen(liga_id: int = Query(0), only_value: int = Query(0), db: Sessi
 
 
 @app.get("/summary")
-def summary(liga_id: int = Query(0), only_value: int = Query(0), db: Session = Depends(get_db)):
+def summary(liga_id: int = Query(0, ge=0), only_value: int = Query(0, ge=0, le=1), db: Session = Depends(get_db)):
     return panel_resumen(liga_id=liga_id, only_value=only_value, db=db)
 
 
 @app.get("/value-bets")
-def value_bets(min_prob: int = Query(70), limit: int = Query(500), db: Session = Depends(get_db)):
+def value_bets(min_prob: int = Query(70, ge=0, le=100), limit: int = Query(500, ge=1, le=2000), db: Session = Depends(get_db)):
     return panel_apuestas_fuertes(min_prob=min_prob, only_value=1, limit=limit, db=db)
