@@ -63,7 +63,7 @@ def test_predict_accepts_valid_payload(monkeypatch):
 
 
 
-def test_predict_normalizes_none_numeric_stats(monkeypatch):
+def test_predict_accepts_none_advanced_numeric_stats_without_zero_fill(monkeypatch):
     client, captured = _client_with_ingest_stub(monkeypatch)
     fixture = base_fixture()
     for field in [
@@ -84,16 +84,16 @@ def test_predict_normalizes_none_numeric_stats(monkeypatch):
 
     assert response.status_code == 200
     normalized = captured["payload"].fixtures[0]
-    assert normalized.cf_home == 0
-    assert normalized.ca_home == 0
-    assert normalized.cf_away == 0
-    assert normalized.ca_away == 0
-    assert normalized.yf_home == 0
-    assert normalized.yf_away == 0
-    assert normalized.shots_home == 0
-    assert normalized.shots_away == 0
-    assert normalized.shots_on_target_home == 0
-    assert normalized.shots_on_target_away == 0
+    assert normalized.cf_home is None
+    assert normalized.ca_home is None
+    assert normalized.cf_away is None
+    assert normalized.ca_away is None
+    assert normalized.yf_home is None
+    assert normalized.yf_away is None
+    assert normalized.shots_home is None
+    assert normalized.shots_away is None
+    assert normalized.shots_on_target_home is None
+    assert normalized.shots_on_target_away is None
 
 
 
@@ -233,3 +233,17 @@ def test_panel_dashboard_filters_finished_fixtures_and_all_markets():
     hidden_markets = {(opp["fixture_id"], opp["code"]) for opp in payload["top_opportunities"]}
     assert (2003, "O85_CORNERS") not in hidden_markets
     assert (2003, "O35_CARDS") not in hidden_markets
+
+
+def test_parse_dt_treats_naive_input_as_warsaw_and_converts_to_utc():
+    dt = main.parse_dt("2026-03-31T19:00:00")
+    assert dt is not None
+    assert dt.tzinfo == timezone.utc
+    assert dt.isoformat() == "2026-03-31T17:00:00+00:00"
+
+
+def test_parse_dt_keeps_explicit_utc_timestamp_stable():
+    dt = main.parse_dt("2026-03-31T17:00:00Z")
+    assert dt is not None
+    assert dt.tzinfo == timezone.utc
+    assert dt.isoformat() == "2026-03-31T17:00:00+00:00"
