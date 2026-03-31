@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -76,6 +76,8 @@ VISIBLE_FIXTURE_STATUSES = {"NS", "1H", "HT", "2H", "LIVE"}
 HIDDEN_FIXTURE_STATUSES = {"FT", "AET", "PEN", "CANC", "ABD", "PST"}
 DISPLAY_TIMEZONE = ZoneInfo(os.getenv("DISPLAY_TIMEZONE", "Europe/Warsaw"))
 INGEST_DEFAULT_TIMEZONE = ZoneInfo(os.getenv("INGEST_DEFAULT_TIMEZONE", "Europe/Warsaw"))
+UTC_TIMEZONE = ZoneInfo("UTC")
+VISIBILITY_FALLBACK_MAX_AGE = timedelta(hours=2)
 
 
 def normalize_fixture_status(status: Optional[str]) -> Optional[str]:
@@ -97,6 +99,39 @@ def visible_fixture_status_expression():
 def apply_visible_fixture_filter(stmt):
     status_expr = visible_fixture_status_expression()
     return stmt.where(status_expr.in_(VISIBLE_FIXTURE_STATUSES))
+
+
+def fixture_datetime_expression():
+    fixture_dt_subquery = (
+        select(Fixture.fixture_datetime)
+        .where(Fixture.fixture_id == Prediction.fixture_id)
+        .scalar_subquery()
+    )
+    return func.coalesce(fixture_dt_subquery, Prediction.hora)
+
+
+def now_utc() -> datetime:
+    return datetime.now(UTC_TIMEZONE)
+
+
+def coerce_utc_datetime(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC_TIMEZONE)
+    return value.astimezone(UTC_TIMEZONE)
+
+
+def is_fixture_visible(status: Optional[str], fixture_dt: Optional[datetime], reference_now_utc: datetime) -> bool:
+    normalized_status = normalize_fixture_status(status)
+    if normalized_status not in VISIBLE_FIXTURE_STATUSES:
+        return False
+
+    dt_utc = coerce_utc_datetime(fixture_dt)
+    if dt_utc is not None and dt_utc < reference_now_utc - VISIBILITY_FALLBACK_MAX_AGE:
+        return False
+
+    return True
 
 
 
@@ -267,8 +302,8 @@ def parse_dt(value: Any) -> Optional[datetime]:
         return None
     if isinstance(value, datetime):
         if value.tzinfo:
-            return value.astimezone(timezone.utc)
-        return value.replace(tzinfo=INGEST_DEFAULT_TIMEZONE).astimezone(timezone.utc)
+            return value.astimezone(UTC_TIMEZONE)
+        return value.replace(tzinfo=UTC_TIMEZONE)
     if isinstance(value, str):
         raw = value.strip()
         if not raw:
@@ -277,8 +312,8 @@ def parse_dt(value: Any) -> Optional[datetime]:
         try:
             dt = datetime.fromisoformat(raw)
             if dt.tzinfo:
-                return dt.astimezone(timezone.utc)
-            return dt.replace(tzinfo=INGEST_DEFAULT_TIMEZONE).astimezone(timezone.utc)
+                return dt.astimezone(UTC_TIMEZONE)
+            return dt.replace(tzinfo=UTC_TIMEZONE)
         except ValueError:
             return None
     return None
@@ -951,7 +986,11 @@ def get_predictions(
     visible_only: int = Query(0, ge=0, le=1),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Prediction, visible_fixture_status_expression().label("fixture_status_current"))
+    stmt = select(
+        Prediction,
+        visible_fixture_status_expression().label("fixture_status_current"),
+        fixture_datetime_expression().label("fixture_datetime_current"),
+    )
     if liga_id:
         stmt = stmt.where(Prediction.liga_id == liga_id)
     if only_value:
@@ -964,7 +1003,15 @@ def get_predictions(
 
     stmt = stmt.order_by(asc(Prediction.hora), asc(Prediction.liga)).limit(limit)
     rows = db.execute(stmt).all()
-    return {"predictions": [serialize_prediction(prediction, fixture_status) for prediction, fixture_status in rows]}
+    reference_now_utc = now_utc()
+    predictions: List[Dict[str, Any]] = []
+    for prediction, fixture_status, fixture_dt in rows:
+        if not is_fixture_visible(fixture_status, fixture_dt, reference_now_utc):
+            continue
+        predictions.append(serialize_prediction(prediction, fixture_status))
+        if len(predictions) >= limit:
+            break
+    return {"predictions": predictions}
 
 
 @app.get("/panel/partidos")
@@ -986,7 +1033,13 @@ def panel_apuestas_fuertes(
     limit: int = Query(300, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
-    stmt = apply_visible_fixture_filter(select(Prediction).where(Prediction.prob_apuesta >= (min_prob / 100.0)))
+    stmt = apply_visible_fixture_filter(
+        select(
+            Prediction,
+            visible_fixture_status_expression().label("fixture_status_current"),
+            fixture_datetime_expression().label("fixture_datetime_current"),
+        ).where(Prediction.prob_apuesta >= (min_prob / 100.0))
+    )
     if only_value:
         stmt = stmt.where(Prediction.es_value_bet == 1)
 
@@ -997,15 +1050,19 @@ def panel_apuestas_fuertes(
         desc(Prediction.confianza),
     ).limit(limit)
 
-    rows = db.execute(stmt).scalars().all()
+    rows = db.execute(stmt).all()
+    reference_now_utc = now_utc()
 
     apuestas = []
-    for p in rows:
+    for p, fixture_status, fixture_dt in rows:
+        if not is_fixture_visible(fixture_status, fixture_dt, reference_now_utc):
+            continue
         apuestas.append({
             "id": int(p.fixture_id),
             "partido": f"{p.local or ''} vs {p.visitante or ''}",
             "liga": p.liga or "",
             "hora": p.hora.isoformat() if p.hora else None,
+            "fixture_status_current": normalize_fixture_status(fixture_status) or normalize_fixture_status(p.estado),
             "mercado": none_if_missing(p.mercado_principal),
             "jugada": none_if_missing(p.apuesta_principal),
             "probabilidad": pct_or_none(p.prob_apuesta, 0),
@@ -1025,7 +1082,11 @@ def panel_dashboard(
     limit: int = Query(300, ge=1, le=3000),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Prediction)
+    stmt = select(
+        Prediction,
+        visible_fixture_status_expression().label("fixture_status_current"),
+        fixture_datetime_expression().label("fixture_datetime_current"),
+    )
     if liga_id:
         stmt = stmt.where(Prediction.liga_id == liga_id)
     if only_value:
@@ -1033,8 +1094,15 @@ def panel_dashboard(
 
     stmt = apply_visible_fixture_filter(stmt)
     stmt = stmt.order_by(asc(Prediction.hora), asc(Prediction.liga)).limit(limit)
-    rows = db.execute(stmt).scalars().all()
-    return build_dashboard_payload(rows, limit=limit)
+    rows = db.execute(stmt).all()
+    reference_now_utc = now_utc()
+    visible_rows: List[Prediction] = []
+    for prediction, fixture_status, fixture_dt in rows:
+        if not is_fixture_visible(fixture_status, fixture_dt, reference_now_utc):
+            continue
+        prediction.estado = normalize_fixture_status(fixture_status) or prediction.estado
+        visible_rows.append(prediction)
+    return build_dashboard_payload(visible_rows[:limit], limit=limit)
 
 
 @app.get("/alerts")
@@ -1051,18 +1119,30 @@ def alerts(limit: int = Query(500, ge=1, le=5000), min_level: int = Query(1, ge=
 
 @app.get("/panel/resumen")
 def panel_resumen(liga_id: int = Query(0), only_value: int = Query(0), db: Session = Depends(get_db)):
-    stmt = apply_visible_fixture_filter(select(Prediction))
+    stmt = apply_visible_fixture_filter(
+        select(
+            Prediction,
+            visible_fixture_status_expression().label("fixture_status_current"),
+            fixture_datetime_expression().label("fixture_datetime_current"),
+        )
+    )
     if liga_id:
         stmt = stmt.where(Prediction.liga_id == liga_id)
     if only_value:
         stmt = stmt.where(Prediction.es_value_bet == 1)
 
-    rows = db.execute(stmt).scalars().all()
-    partidos = len(rows)
-    evaluados = sum(1 for r in rows if (r.prob_apuesta or 0) > 0)
-    con_cuota = sum(1 for r in rows if (r.cuota_principal or 0) > 1.0)
-    ligas = len({(int(r.liga_id or 0), r.liga or "") for r in rows})
-    value_bets = sum(1 for r in rows if int(r.es_value_bet or 0) == 1)
+    rows = db.execute(stmt).all()
+    reference_now_utc = now_utc()
+    visible_rows = [
+        prediction
+        for prediction, fixture_status, fixture_dt in rows
+        if is_fixture_visible(fixture_status, fixture_dt, reference_now_utc)
+    ]
+    partidos = len(visible_rows)
+    evaluados = sum(1 for r in visible_rows if (r.prob_apuesta or 0) > 0)
+    con_cuota = sum(1 for r in visible_rows if (r.cuota_principal or 0) > 1.0)
+    ligas = len({(int(r.liga_id or 0), r.liga or "") for r in visible_rows})
+    value_bets = sum(1 for r in visible_rows if int(r.es_value_bet or 0) == 1)
     alertas = int(
         db.scalar(select(func.count()).select_from(PricingAlert).where(PricingAlert.alert_level >= 1)) or 0
     )
