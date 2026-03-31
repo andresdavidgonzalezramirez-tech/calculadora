@@ -648,15 +648,64 @@ def _extract_threshold_odd(raw: Any) -> Dict[str, Optional[float]]:
     return out
 
 
+def _threshold_aliases(key: str) -> List[str]:
+    raw = str(key or "").strip().lower()
+    normalized = raw.replace(".", "_").replace("-", "_").replace(" ", "_")
+    aliases = {normalized}
+    if normalized and normalized[0].isdigit():
+        aliases.add(f"over_{normalized}")
+        aliases.add(f"over{normalized}")
+    return [alias for alias in aliases if alias]
+
+
 def _prefix_threshold_keys(raw: Dict[str, Optional[float]], prefix: str) -> Dict[str, Optional[float]]:
     out: Dict[str, Optional[float]] = {}
     safe_prefix = str(prefix or "").strip().lower()
     if not safe_prefix:
         return out
     for key, value in raw.items():
-        norm_key = str(key or "").strip().lower().replace(".", "_")
-        out[f"{safe_prefix}_{norm_key}"] = value
+        for alias in _threshold_aliases(key):
+            out[f"{safe_prefix}_{alias}"] = value
     return out
+
+
+def _extract_market_catalog_odds(raw_catalog: Any) -> Dict[str, Any]:
+    if hasattr(raw_catalog, "model_dump"):
+        raw_catalog = raw_catalog.model_dump()
+
+    catalog = raw_catalog if isinstance(raw_catalog, list) else [raw_catalog]
+    mapped: Dict[str, Any] = {}
+
+    for item in catalog:
+        if hasattr(item, "model_dump"):
+            item = item.model_dump()
+        if not isinstance(item, dict):
+            continue
+
+        family = str(item.get("family") or item.get("group") or item.get("market_family") or "").lower()
+        scope = str(item.get("scope") or item.get("team_scope") or item.get("side") or item.get("selection") or "").lower()
+        line = str(item.get("line") or item.get("threshold") or item.get("total") or "").strip().replace(".", "_")
+        odd = item.get("odd", item.get("odds", item.get("price")))
+        odd_value = _safe_float(odd, 0.0)
+        if odd_value <= 1.0:
+            continue
+
+        if "corner" in family and line:
+            if "home" in scope:
+                mapped[f"corners_home_over_{line}"] = odd_value
+            elif "away" in scope:
+                mapped[f"corners_away_over_{line}"] = odd_value
+            else:
+                mapped[f"corners_over_{line}"] = odd_value
+        elif "card" in family and line:
+            if "home" in scope:
+                mapped[f"cards_home_over_{line}"] = odd_value
+            elif "away" in scope:
+                mapped[f"cards_away_over_{line}"] = odd_value
+            else:
+                mapped[f"cards_over_{line}"] = odd_value
+
+    return mapped
 
 
 def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
@@ -694,6 +743,10 @@ def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
     for key in ["bookmakers", "markets", "odds_data", "market_odds"]:
         if fixture.get(key):
             sources.append(fixture.get(key))
+    if fixture.get("market_catalog"):
+        market_catalog_odds = _extract_market_catalog_odds(fixture.get("market_catalog"))
+        flat.update(market_catalog_odds)
+        sources.append(fixture.get("market_catalog"))
 
     top_level = {
         key: fixture.get(key)
@@ -727,11 +780,11 @@ def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
         "dc_1x": _pick_odds(flat, "double_chance_1x", "dc_1x", "1x", "doublechance_1x"),
         "dc_x2": _pick_odds(flat, "double_chance_x2", "dc_x2", "x2", "doublechance_x2"),
         "dc_12": _pick_odds(flat, "double_chance_12", "dc_12", "12", "doublechance_12"),
-        "over75_corners": _pick_odds(flat, "over75_corners", "corners_over_7_5", "over_7_5_corners", "total_corners_over_7_5"),
-        "over85_corners": _pick_odds(flat, "over85_corners", "corners_over_8_5", "over_8_5_corners", "total_corners_over_8_5"),
-        "over95_corners": _pick_odds(flat, "over95_corners", "corners_over_9_5", "over_9_5_corners", "total_corners_over_9_5"),
-        "over35_cards": _pick_odds(flat, "over35_cards", "cards_over_3_5", "over_3_5_cards", "total_cards_over_3_5"),
-        "over45_cards": _pick_odds(flat, "over45_cards", "cards_over_4_5", "over_4_5_cards", "total_cards_over_4_5"),
+        "over75_corners": _pick_odds(flat, "over75_corners", "corners_over_7_5", "over_7_5_corners", "total_corners_over_7_5", "corners_7_5"),
+        "over85_corners": _pick_odds(flat, "over85_corners", "corners_over_8_5", "over_8_5_corners", "total_corners_over_8_5", "corners_8_5"),
+        "over95_corners": _pick_odds(flat, "over95_corners", "corners_over_9_5", "over_9_5_corners", "total_corners_over_9_5", "corners_9_5"),
+        "over35_cards": _pick_odds(flat, "over35_cards", "cards_over_3_5", "over_3_5_cards", "total_cards_over_3_5", "cards_3_5"),
+        "over45_cards": _pick_odds(flat, "over45_cards", "cards_over_4_5", "over_4_5_cards", "total_cards_over_4_5", "cards_4_5"),
         "corners_home_over_3_5": _pick_odds(flat, "corners_home_over_3_5", "home_corners_over_3_5"),
         "corners_home_over_4_5": _pick_odds(flat, "corners_home_over_4_5", "home_corners_over_4_5"),
         "corners_away_over_3_5": _pick_odds(flat, "corners_away_over_3_5", "away_corners_over_3_5"),
@@ -1230,7 +1283,11 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
 
     odds = extract_odds(f)
     collection_meta = f.get("collection_meta") if isinstance(f.get("collection_meta"), dict) else {}
-    feature_availability = collection_meta.get("feature_availability") if isinstance(collection_meta.get("feature_availability"), dict) else {}
+    feature_availability = {}
+    if isinstance(collection_meta.get("feature_availability"), dict):
+        feature_availability = collection_meta.get("feature_availability") or {}
+    elif isinstance(f.get("feature_availability"), dict):
+        feature_availability = f.get("feature_availability") or {}
     market_blocking_reasons = f.get("market_blocking_reasons") if isinstance(f.get("market_blocking_reasons"), dict) else {}
 
     goals_ready = f.get("goals_ready") if isinstance(f.get("goals_ready"), bool) else _nested_bool(feature_availability, ["goals", "ready"])

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import db
 import main
+import predictor
 
 
 class DummySession:
@@ -279,3 +280,37 @@ def test_parse_dt_keeps_explicit_utc_timestamp_stable():
     assert dt is not None
     assert dt.tzinfo == timezone.utc
     assert dt.isoformat() == "2026-03-31T17:00:00+00:00"
+
+
+def test_extract_odds_supports_totals_threshold_payload_for_corners_and_cards():
+    fixture = {
+        "odds": {
+            "totals": {
+                "corners": {"7.5": 1.91, "8.5": 2.11},
+                "cards": {"3.5": 1.75, "4.5": 2.02},
+            }
+        }
+    }
+
+    odds = predictor.extract_odds(fixture)
+    assert odds["over75_corners"] == 1.91
+    assert odds["over85_corners"] == 2.11
+    assert odds["over35_cards"] == 1.75
+    assert odds["over45_cards"] == 2.02
+
+
+def test_extract_odds_reads_market_catalog_for_advanced_markets():
+    fixture = {
+        "market_catalog": [
+            {"family": "corners", "line": 7.5, "odd": 1.88},
+            {"family": "cards", "line": 3.5, "odd": 1.79},
+            {"family": "corners", "scope": "home", "line": 3.5, "odd": 1.66},
+            {"family": "cards", "scope": "away", "line": 1.5, "odd": 1.72},
+        ]
+    }
+
+    odds = predictor.extract_odds(fixture)
+    assert odds["over75_corners"] == 1.88
+    assert odds["over35_cards"] == 1.79
+    assert odds["corners_home_over_3_5"] == 1.66
+    assert odds["cards_away_over_1_5"] == 1.72
