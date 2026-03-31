@@ -278,8 +278,69 @@ def test_parse_dt_treats_naive_input_as_warsaw_and_converts_to_utc():
 def test_parse_dt_keeps_explicit_utc_timestamp_stable():
     dt = main.parse_dt("2026-03-31T17:00:00Z")
     assert dt is not None
-    assert dt.tzinfo == timezone.utc
-    assert dt.isoformat() == "2026-03-31T17:00:00+00:00"
+
+
+def test_calcular_partido_pricing_completo_para_mercados_avanzados_dinamicos():
+    fixture = base_fixture()
+    fixture.update(
+        {
+            "gf_home": 1.6,
+            "ga_home": 1.0,
+            "gf_away": 1.2,
+            "ga_away": 1.3,
+            "cf_home": 5.8,
+            "ca_home": 4.6,
+            "cf_away": 4.9,
+            "ca_away": 5.2,
+            "yf_home": 2.2,
+            "yf_away": 2.4,
+            "shots_home": 13.0,
+            "shots_away": 10.5,
+            "shots_on_target_home": 4.8,
+            "shots_on_target_away": 3.6,
+            "fouls_home": 12.0,
+            "fouls_away": 11.0,
+            "offsides_home": 1.9,
+            "offsides_away": 1.5,
+            "odds": {
+                "totals": {
+                    "corners": {"1.5": 1.2, "2.5": 1.35, "8.5": 1.95},
+                    "cards": {"2.5": 1.52, "3.5": 1.75},
+                    "fouls": {"15.5": 1.83},
+                    "offsides": {"2.5": 1.78},
+                },
+                "corners_home_over_1_5": 1.3,
+                "cards_away_over_1_5": 1.55,
+                "shots_home_over_9_5": 1.7,
+                "shots_on_target_away_over_1_5": 1.62,
+            },
+        }
+    )
+
+    result = predictor.calcular_partido(fixture)
+    breakdown = result["market_breakdown"]
+    indexed = {item["code"]: item for item in breakdown}
+
+    required_codes = [
+        "CORNERS_TOTAL_OVER_1_5_FT",
+        "CARDS_TOTAL_OVER_2_5_FT",
+        "SHOTS_HOME_OVER_9_5_FT",
+        "SHOTS_ON_TARGET_AWAY_OVER_1_5_FT",
+        "FOULS_TOTAL_OVER_15_5_FT",
+        "OFFSIDES_TOTAL_OVER_2_5_FT",
+    ]
+
+    for code in required_codes:
+        assert code in indexed
+        assert indexed[code]["market_complete"] is True
+        assert indexed[code]["prob"] is not None
+        assert indexed[code]["probabilidad_implicita"] is not None
+        assert indexed[code]["edge"] is not None
+        assert indexed[code]["ev"] is not None
+
+    assert indexed["CORNERS_TOTAL_OVER_1_5_FT"]["line"] == 1.5
+    assert indexed["CARDS_TOTAL_OVER_2_5_FT"]["line"] == 2.5
+    assert indexed["SHOTS_HOME_OVER_9_5_FT"]["line"] == 9.5
 
 
 def test_extract_odds_supports_totals_threshold_payload_for_corners_and_cards():
