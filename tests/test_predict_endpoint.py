@@ -256,9 +256,12 @@ def test_panel_dashboard_only_ns_future_and_multiple_markets(monkeypatch):
 
     visible_codes = {(opp["fixture_id"], opp["code"]) for opp in payload["top_opportunities"]}
     assert (2001, "O85_CORNERS") in visible_codes
-    assert (2001, "O35_CARDS") in visible_codes
-    assert (2001, "SHOTS_HOME") in visible_codes
-    assert (2001, "SOT_AWAY") in visible_codes
+    assert (2001, "OVER25") in visible_codes
+    assert (2001, "O35_CARDS") not in visible_codes
+    assert (2001, "SHOTS_HOME") not in visible_codes
+    assert (2001, "SOT_AWAY") not in visible_codes
+
+    assert all((opp.get("model_prob") or 0) >= 0.60 for opp in payload["top_opportunities"])
 
     total_leagues = payload["summary"]["total_ligas"]
     assert total_leagues >= 2
