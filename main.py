@@ -427,6 +427,15 @@ class FixtureInput(BaseModel):
     away_recent_form: List[Dict[str, Any]] = Field(default_factory=list)
     head_to_head: List[Dict[str, Any]] = Field(default_factory=list)
     odds: Dict[str, Any] = Field(default_factory=dict)
+    market_catalog: Any = Field(default_factory=list)
+    families: Dict[str, Any] = Field(default_factory=dict)
+    feature_availability: Dict[str, Any] = Field(default_factory=dict)
+    market_blocking_reasons: Dict[str, Any] = Field(default_factory=dict)
+    advanced_sample_counts: Dict[str, Any] = Field(default_factory=dict)
+    request_meta: Dict[str, Any] = Field(default_factory=dict)
+    corners_publish_allowed: Optional[bool] = None
+    cards_publish_allowed: Optional[bool] = None
+    transport_allowed: Optional[bool] = None
     collection_meta: Dict[str, Any] = Field(default_factory=dict)
 
 class IngestRunRequest(BaseModel):
