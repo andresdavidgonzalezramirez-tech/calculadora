@@ -76,7 +76,7 @@ STABLE_MARKET_PRIORITY = {
 PROBABILITY_FLOORS = {
     "strict": 0.64,
     "high": 0.60,
-    "medium": 0.56,
+    "medium": 0.60,
 }
 MAX_ACCEPTABLE_VOLATILITY = 0.55
 
@@ -1080,7 +1080,7 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if out:
         return out
 
-    fallback = ordered[:3]
+    fallback = [item for item in ordered if item.get("prob", 0.0) >= PROBABILITY_FLOORS["medium"]][:3]
     for item in fallback:
         out.append(
             {

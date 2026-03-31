@@ -64,13 +64,18 @@ if STATIC_DIR.exists():
 
 
 MARKET_FAMILY_RULES = [
-    ("1x2", ("1X2", "DC_")),
+    ("1x2", ("1X2",)),
+    ("double_chance", ("DC_", "DOUBLE CHANCE", "DOBLE OPORTUNIDAD")),
     ("goals", ("OVER", "UNDER", "TEAM_", "GOALS", "SCORE")),
     ("btts", ("BTTS", "AMBOS")),
     ("corners", ("CORNER",)),
     ("cards", ("CARD", "TARJET")),
-    ("shots", ("SHOT", "SOT", "TIRO", "PUERTA")),
+    ("shots_on_target", ("SOT", "SHOTS ON TARGET", "TIROS A PUERTA")),
+    ("shots", ("SHOT", "TIRO")),
+    ("fouls", ("FOUL", "FALTA")),
+    ("offsides", ("OFFSIDE", "FUERA DE JUEGO")),
 ]
+MIN_MODEL_PROBABILITY = float(os.getenv("MIN_MODEL_PROBABILITY", "0.60"))
 
 VISIBLE_FIXTURE_STATUSES = {"NS"}
 HIDDEN_FIXTURE_STATUSES = {"1H", "HT", "2H", "LIVE", "FT", "AET", "PEN", "CANC", "ABD", "PST"}
@@ -233,11 +238,18 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
             market_telemetry[fixture_key][opportunity["code"]] = opportunity
             all_opportunities.append(opportunity)
 
-            if opportunity["flags"]["ev_plus"] and market_complete:
+            is_publishable = bool(market_complete and model_prob is not None and model_prob >= MIN_MODEL_PROBABILITY)
+            opportunity["publishable"] = is_publishable
+
+            if opportunity["flags"]["ev_plus"] and is_publishable:
                 opportunities_ev.append(opportunity)
                 top_by_family.setdefault(family, []).append(opportunity)
                 included.append(opportunity)
             else:
+                if model_prob is None:
+                    opportunity["reason_discard"] = "missing_model_probability"
+                elif model_prob < MIN_MODEL_PROBABILITY:
+                    opportunity["reason_discard"] = f"below_min_model_probability_{int(MIN_MODEL_PROBABILITY * 100)}"
                 if not market_complete:
                     opportunity["reason_discard"] = "market_incomplete"
                 excluded.append(opportunity)
@@ -279,7 +291,7 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
     )[:limit]
 
     top_opportunities = sorted(
-        [item for item in all_opportunities if item.get("market_complete")],
+        [item for item in all_opportunities if item.get("market_complete") and item.get("publishable")],
         key=lambda item: (item.get("close_probability") or -1, item.get("edge") or -999),
         reverse=True,
     )[:limit]
@@ -311,6 +323,9 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
         "paises": paises,
         "match_radar": match_radar[:limit],
         "summary": summary,
+        "filters": {
+            "min_model_probability": MIN_MODEL_PROBABILITY,
+        },
     }
 
 

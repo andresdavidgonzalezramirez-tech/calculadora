@@ -38,13 +38,18 @@ const KPI_CONFIG = [
 
 const FAMILY_LABELS = {
   "1x2": "1X2",
+  double_chance: "Double chance",
   goals: "Goals",
   btts: "BTTS",
   corners: "Corners",
   cards: "Cards",
   shots: "Shots",
+  shots_on_target: "Shots on target",
+  fouls: "Fouls",
+  offsides: "Offsides",
   secondary: "Secondary",
 };
+const MIN_MODEL_PROBABILITY = 0.6;
 const SCHEDULED_FIXTURE_STATUSES = new Set(["NS"]);
 const DISPLAY_TIMEZONE = "Europe/Warsaw";
 
@@ -102,9 +107,13 @@ function inferFamily(raw = {}) {
     raw.jugada,
   ].map((v) => String(v || "").toUpperCase()).join(" ");
 
+  if (["DOUBLE CHANCE", "DOBLE OPORTUNIDAD", " DC_", " DC "].some((k) => token.includes(k))) return "double_chance";
   if (["CORNER", "CORNERS", "SAQUES DE ESQUINA"].some((k) => token.includes(k))) return "corners";
   if (["CARD", "CARDS", "TARJET", "AMARILLA", "ROJA"].some((k) => token.includes(k))) return "cards";
-  if (["SHOT", "SHOTS", "SOT", "TIROS", "REMATES", "PUERTA"].some((k) => token.includes(k))) return "shots";
+  if (["SHOTS ON TARGET", "SOT", "TIROS A PUERTA", "PUERTA"].some((k) => token.includes(k))) return "shots_on_target";
+  if (["SHOT", "SHOTS", "TIROS", "REMATES"].some((k) => token.includes(k))) return "shots";
+  if (["FOUL", "FOULS", "FALTAS"].some((k) => token.includes(k))) return "fouls";
+  if (["OFFSIDE", "OFFSIDES", "FUERA DE JUEGO"].some((k) => token.includes(k))) return "offsides";
   if (["TEAM", "MARCARA", "SCORE YES", "GOLES EQUIPO"].some((k) => token.includes(k))) return "goals";
   if (["BTTS", "AMBOS MARCAN", "BOTH TEAMS TO SCORE"].some((k) => token.includes(k))) return "btts";
   if (["1X2", "DC", "DOUBLE CHANCE", "DRAW", "EMPATE"].some((k) => token.includes(k))) return "1x2";
@@ -160,6 +169,10 @@ function normalizeOpportunity(raw) {
     },
   };
   normalized.market_complete = isCompleteOpportunity(normalized);
+  normalized.publishable = normalized.market_complete && normalized.model_prob !== null && normalized.model_prob >= MIN_MODEL_PROBABILITY;
+  if (!normalized.publishable && normalized.model_prob !== null && normalized.model_prob < MIN_MODEL_PROBABILITY) {
+    normalized.reason_discard = normalized.reason_discard || "below_min_model_probability_60";
+  }
   return normalized;
 }
 
@@ -410,7 +423,7 @@ function buildUnifiedOpportunities(payload) {
 
   const unified = dedupeOpportunities(withFixtureContext(prioritized, matchMap));
   return {
-    complete: unified.filter((o) => o.market_complete),
+    complete: unified.filter((o) => o.market_complete && o.publishable),
     incomplete: unified.filter((o) => !o.market_complete),
   };
 }
@@ -489,6 +502,20 @@ function bindFilters() {
   q("refresh-btn").addEventListener("click", refreshDashboard);
 }
 
+function populateFamilySelector() {
+  const selector = q("filter-family");
+  if (!selector) return;
+  const values = new Set(["1x2", "double_chance", "goals", "btts", "corners", "cards", "shots", "shots_on_target", "fouls", "offsides", "secondary"]);
+  [...state.opportunities, ...state.incompleteOpportunities].forEach((opp) => {
+    if (opp.family) values.add(opp.family);
+  });
+  const sorted = Array.from(values).sort((a, b) => (FAMILY_LABELS[a] || a).localeCompare(FAMILY_LABELS[b] || b));
+  selector.innerHTML = '<option value="">Todas</option>' + sorted.map((value) => `<option value="${value}">${FAMILY_LABELS[value] || value}</option>`).join("");
+  if (state.filters.family && sorted.includes(state.filters.family)) {
+    selector.value = state.filters.family;
+  }
+}
+
 function renderFromState() {
   const familyFilterActive = Boolean(state.filters.family);
   const strict = applyFilters(state.opportunities, { respectFamily: true });
@@ -537,11 +564,16 @@ function renderFromState() {
 
   const familySections = [
     ["1x2", "family-1x2", "family-1x2-incomplete", "Sin 1X2 para filtros activos."],
+    ["double_chance", "family-double-chance", "family-double-chance-incomplete", "Sin double chance para filtros activos."],
     ["goals", "family-goals", "family-goals-incomplete", "Sin goals para filtros activos."],
     ["btts", "family-btts", "family-btts-incomplete", "Sin BTTS para filtros activos."],
     ["corners", "family-corners", "family-corners-incomplete", "Sin corners para filtros activos."],
     ["cards", "family-cards", "family-cards-incomplete", "Sin cards para filtros activos."],
     ["shots", "family-shots", "family-shots-incomplete", "Sin shots para filtros activos."],
+    ["shots_on_target", "family-shots-on-target", "family-shots-on-target-incomplete", "Sin shots on target para filtros activos."],
+    ["fouls", "family-fouls", "family-fouls-incomplete", "Sin fouls para filtros activos."],
+    ["offsides", "family-offsides", "family-offsides-incomplete", "Sin offsides para filtros activos."],
+    ["secondary", "family-secondary", "family-secondary-incomplete", "Sin secondary para filtros activos."],
   ];
 
   familySections.forEach(([family, target, incompleteTarget, empty]) => {
@@ -591,6 +623,7 @@ function populateSelectors() {
   fillSelect("filter-league", state.opportunities.map((o) => o.liga), state.filters.league);
   fillSelect("filter-team", state.opportunities.flatMap((o) => (o.partido || "").split(" vs ")), state.filters.team);
   fillSelect("filter-market", [...state.opportunities, ...state.incompleteOpportunities].flatMap((o) => [o.market, o.code]), state.filters.market);
+  populateFamilySelector();
 }
 
 async function refreshDashboard() {
