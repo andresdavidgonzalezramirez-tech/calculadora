@@ -1,5 +1,6 @@
 
 import math
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 MAX_GOALS = 10
@@ -708,6 +709,75 @@ def _extract_market_catalog_odds(raw_catalog: Any) -> Dict[str, Any]:
     return mapped
 
 
+def _line_from_key(raw_key: str) -> Optional[float]:
+    match = re.search(r"over[_-]?(\d+(?:[_\.]\d+)?)", raw_key)
+    if not match:
+        return None
+    cleaned = match.group(1).replace("_", ".")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _period_from_key(raw_key: str) -> str:
+    key = raw_key.lower()
+    if "first_half" in key or "1st_half" in key or "1h_" in key or key.startswith("1h"):
+        return "1H"
+    if "second_half" in key or "2nd_half" in key or "2h_" in key or key.startswith("2h"):
+        return "2H"
+    return "FT"
+
+
+def _extract_dynamic_over_markets(flat: Dict[str, Any]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    families = {
+        "corners": ("corners", "corner"),
+        "cards": ("cards", "card", "tarjet"),
+        "shots_on_target": ("shots_on_target", "sot", "shots_on", "tiros_a_puerta"),
+        "shots": ("shots", "shot", "tiros"),
+        "fouls": ("fouls", "foul", "faltas"),
+        "offsides": ("offsides", "offside", "fuera_de_juego"),
+    }
+
+    for raw_key, raw_value in flat.items():
+        odd = _safe_float(raw_value, 0.0)
+        if odd <= 1.0:
+            continue
+        key = str(raw_key or "").lower()
+        if "over" not in key:
+            continue
+        line = _line_from_key(key)
+        if line is None or line < 0.5:
+            continue
+
+        family = None
+        for candidate, aliases in families.items():
+            if any(alias in key for alias in aliases):
+                family = candidate
+                break
+        if family is None:
+            continue
+
+        scope = "total"
+        if "_home_" in key or key.startswith("home_") or "_local_" in key:
+            scope = "home"
+        elif "_away_" in key or key.startswith("away_") or "_visitante_" in key:
+            scope = "away"
+
+        out.append(
+            {
+                "family": family,
+                "scope": scope,
+                "line": line,
+                "odd": odd,
+                "period": _period_from_key(key),
+                "source_key": key,
+            }
+        )
+    return out
+
+
 def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
     sources = []
     flat: Dict[str, Any] = {}
@@ -719,6 +789,10 @@ def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
             goals = totals.get("goals") or {}
             corners = totals.get("corners") or {}
             cards = totals.get("cards") or {}
+            fouls = totals.get("fouls") or {}
+            offsides = totals.get("offsides") or {}
+            shots_totals = totals.get("shots") or {}
+            sot_totals = totals.get("shots_on_target") or {}
 
             if isinstance(goals, dict):
                 flat.update(goals)
@@ -726,6 +800,14 @@ def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
                 flat.update(_prefix_threshold_keys(_extract_threshold_odd(corners), "corners"))
             if isinstance(cards, dict):
                 flat.update(_prefix_threshold_keys(_extract_threshold_odd(cards), "cards"))
+            if isinstance(fouls, dict):
+                flat.update(_prefix_threshold_keys(_extract_threshold_odd(fouls), "fouls"))
+            if isinstance(offsides, dict):
+                flat.update(_prefix_threshold_keys(_extract_threshold_odd(offsides), "offsides"))
+            if isinstance(shots_totals, dict):
+                flat.update(_prefix_threshold_keys(_extract_threshold_odd(shots_totals), "shots"))
+            if isinstance(sot_totals, dict):
+                flat.update(_prefix_threshold_keys(_extract_threshold_odd(sot_totals), "shots_on_target"))
 
             home_shots = _nested(odds_obj, ["totals", "shots", "home_first_over", "odd"])
             away_shots = _nested(odds_obj, ["totals", "shots", "away_first_over", "odd"])
@@ -768,7 +850,7 @@ def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
     for source in sources:
         flat.update(_collect_odds_map(source))
 
-    return {
+    odds = {
         "home": _pick_odds(flat, "home", "home_odds", "odds_home", "match_winner_home", "1x2_home", "match_result_home", "winner_home", "match_winner_1_home"),
         "draw": _pick_odds(flat, "draw", "draw_odds", "odds_draw", "match_winner_draw", "1x2_draw", "match_result_draw", "winner_draw", "match_winner_x_draw"),
         "away": _pick_odds(flat, "away", "away_odds", "odds_away", "match_winner_away", "1x2_away", "match_result_away", "winner_away", "match_winner_2_away"),
@@ -812,6 +894,8 @@ def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
         "sot_home_line": _safe_float(flat.get("sot_home_line"), 0.0) or None,
         "sot_away_line": _safe_float(flat.get("sot_away_line"), 0.0) or None,
     }
+    odds["dynamic_over_markets"] = _extract_dynamic_over_markets(flat)
+    return odds
 
 
 def _market_name(code: str, home_name: str, away_name: str) -> str:
@@ -951,6 +1035,8 @@ def _build_market(
     home_name: str,
     away_name: str,
     line: Optional[float] = None,
+    market_name_override: Optional[str] = None,
+    market_group_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     prob = _calibrated_binary_prob(prob, _clamp((quality * 0.68) + (data_quality * 0.32), 0.35, 1.0))
     reliability = _market_reliability(code)
@@ -988,8 +1074,8 @@ def _build_market(
 
     return {
         "code": code,
-        "mercado": _market_group(code),
-        "jugada": _market_name(code, home_name, away_name),
+        "mercado": market_group_override or _market_group(code),
+        "jugada": market_name_override or _market_name(code, home_name, away_name),
         "prob": prob,
         "cuota": odd,
         "edge": pricing["edge"],
@@ -1282,6 +1368,7 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
     form_away = _resolve_form_factor(f.get("form_away"), away_stats["form_factor"])
 
     odds = extract_odds(f)
+    dynamic_over_markets = odds.get("dynamic_over_markets") if isinstance(odds.get("dynamic_over_markets"), list) else []
     collection_meta = f.get("collection_meta") if isinstance(f.get("collection_meta"), dict) else {}
     feature_availability = {}
     if isinstance(collection_meta.get("feature_availability"), dict):
@@ -1453,6 +1540,22 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
     if sot_away is not None:
         puerta_visitante = _clamp(sot_away, 1.0, 6.2)
 
+    fouls_local = _resolve_optional_metric(f.get("fouls_home"), _parse_avg_number(_nested(f.get("home_stats") or {}, ["fouls", "for", "average", "home"])))
+    fouls_visitante = _resolve_optional_metric(f.get("fouls_away"), _parse_avg_number(_nested(f.get("away_stats") or {}, ["fouls", "for", "average", "away"])))
+    if fouls_local is None and tarjetas_local is not None:
+        fouls_local = _clamp(tarjetas_local * 3.4 + 5.8, 6.0, 22.0)
+    if fouls_visitante is None and tarjetas_visitante is not None:
+        fouls_visitante = _clamp(tarjetas_visitante * 3.3 + 6.0, 6.0, 22.0)
+    fouls_totales = (fouls_local + fouls_visitante) if (fouls_local is not None and fouls_visitante is not None) else None
+
+    offsides_local = _resolve_optional_metric(f.get("offsides_home"), _parse_avg_number(_nested(f.get("home_stats") or {}, ["offsides", "for", "average", "home"])))
+    offsides_visitante = _resolve_optional_metric(f.get("offsides_away"), _parse_avg_number(_nested(f.get("away_stats") or {}, ["offsides", "for", "average", "away"])))
+    if offsides_local is None and puerta_local is not None:
+        offsides_local = _clamp(puerta_local * 0.34 + 0.55, 0.5, 5.5)
+    if offsides_visitante is None and puerta_visitante is not None:
+        offsides_visitante = _clamp(puerta_visitante * 0.34 + 0.50, 0.5, 5.5)
+    offsides_totales = (offsides_local + offsides_visitante) if (offsides_local is not None and offsides_visitante is not None) else None
+
     fair_1x2 = _remove_overround_1x2(odds.get("home"), odds.get("draw"), odds.get("away"))
 
     markets: List[Dict[str, Any]] = []
@@ -1519,6 +1622,120 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         markets.append(_build_market("SOT_AWAY", 0.50 + ((puerta_visitante - LEAGUE_BASELINES["shots_on_away"]) / 8.0), odds.get("sot_away"), implied_prob(odds.get("sot_away")), structural_quality, shots_away_quality, home_name, away_name))
         sot_away_line = odds.get("sot_away_line") or _infer_dynamic_line(puerta_visitante, 1.5, 5.0, 3.0)
         markets.append(_build_market("SOT_AWAY_OVER_X", prob_over_lambda(puerta_visitante, sot_away_line), odds.get("sot_away_over_x"), implied_prob(odds.get("sot_away_over_x")), structural_quality, shots_away_quality, home_name, away_name, line=sot_away_line))
+
+    for idx, dyn in enumerate(dynamic_over_markets):
+        family = str(dyn.get("family") or "")
+        scope = str(dyn.get("scope") or "total")
+        period = str(dyn.get("period") or "FT")
+        line = _safe_float(dyn.get("line"), 0.0)
+        odd = _safe_float(dyn.get("odd"), 0.0)
+        if line < 0.5 or odd <= 1.0:
+            continue
+
+        base_lambda = None
+        quality = structural_quality
+        group = "Secondary"
+        team_label = "total"
+        if family == "corners":
+            group = "Corners"
+            quality = corners_quality if corners_quality > 0 else _clamp(structural_quality * 0.65 + corners_presence * 0.35, 0.35, 1.0)
+            if scope == "home":
+                base_lambda = corners_local
+                team_label = home_name
+            elif scope == "away":
+                base_lambda = corners_visitante
+                team_label = away_name
+            else:
+                base_lambda = corners_totales
+        elif family == "cards":
+            group = "Tarjetas"
+            quality = cards_quality if cards_quality > 0 else _clamp(structural_quality * 0.65 + cards_presence * 0.35, 0.35, 1.0)
+            if scope == "home":
+                base_lambda = tarjetas_local
+                team_label = home_name
+            elif scope == "away":
+                base_lambda = tarjetas_visitante
+                team_label = away_name
+            else:
+                base_lambda = tarjetas_totales
+        elif family == "shots":
+            group = "Tiros"
+            if scope == "home":
+                base_lambda = tiros_local
+                quality = shots_home_quality
+                team_label = home_name
+            elif scope == "away":
+                base_lambda = tiros_visitante
+                quality = shots_away_quality
+                team_label = away_name
+            else:
+                base_lambda = (tiros_local + tiros_visitante) if (tiros_local is not None and tiros_visitante is not None) else None
+                quality = _clamp((shots_home_quality + shots_away_quality) / 2.0, 0.0, 1.0)
+        elif family == "shots_on_target":
+            group = "Tiros a puerta"
+            if scope == "home":
+                base_lambda = puerta_local
+                quality = shots_home_quality
+                team_label = home_name
+            elif scope == "away":
+                base_lambda = puerta_visitante
+                quality = shots_away_quality
+                team_label = away_name
+            else:
+                base_lambda = (puerta_local + puerta_visitante) if (puerta_local is not None and puerta_visitante is not None) else None
+                quality = _clamp((shots_home_quality + shots_away_quality) / 2.0, 0.0, 1.0)
+        elif family == "fouls":
+            group = "Faltas"
+            quality = _clamp((cards_quality if cards_quality > 0 else structural_quality) * 0.78, 0.34, 1.0)
+            if scope == "home":
+                base_lambda = fouls_local
+                team_label = home_name
+            elif scope == "away":
+                base_lambda = fouls_visitante
+                team_label = away_name
+            else:
+                base_lambda = fouls_totales
+        elif family == "offsides":
+            group = "Offsides"
+            quality = _clamp((max(shots_home_quality, 0.35) + max(shots_away_quality, 0.35)) / 2.0, 0.34, 1.0)
+            if scope == "home":
+                base_lambda = offsides_local
+                team_label = home_name
+            elif scope == "away":
+                base_lambda = offsides_visitante
+                team_label = away_name
+            else:
+                base_lambda = offsides_totales
+
+        if base_lambda is None or base_lambda <= 0:
+            continue
+
+        period_factor = 0.46 if period == "1H" else 0.54 if period == "2H" else 1.0
+        event_lambda = _clamp(base_lambda * period_factor, 0.05, 55.0)
+        prob = _round_prob(prob_over_lambda(event_lambda, line))
+        family_token = family.upper()
+        code = f"{family_token}_{scope.upper()}_OVER_{str(line).replace('.', '_')}_{period}"
+        period_label = "1T" if period == "1H" else "2T" if period == "2H" else "Partido"
+        if scope == "total":
+            pick = f"{group} total más de {line:.1f} ({period_label})"
+        else:
+            pick = f"{team_label} más de {line:.1f} {group.lower()} ({period_label})"
+
+        markets.append(
+            _build_market(
+                code,
+                prob,
+                odd,
+                implied_prob(odd),
+                structural_quality,
+                max(quality, 0.34),
+                home_name,
+                away_name,
+                line=line,
+                market_name_override=pick,
+                market_group_override=group,
+            )
+        )
 
     best = _select_primary_bet(markets)
     apuestas_fuertes = _strong_bets(markets)
