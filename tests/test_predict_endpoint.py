@@ -260,12 +260,12 @@ def test_panel_dashboard_only_ns_future_and_multiple_markets(monkeypatch):
     visible_codes = {(opp["fixture_id"], opp["code"]) for opp in payload["top_opportunities"]}
     assert (2001, "O85_CORNERS") in visible_codes
     assert (2001, "OVER25") in visible_codes
-    assert (2001, "O35_CARDS") in visible_codes
-    assert (2001, "SHOTS_HOME") in visible_codes
-    assert (2001, "SOT_AWAY") in visible_codes
+    assert (2001, "O35_CARDS") not in visible_codes
+    assert (2001, "SHOTS_HOME") not in visible_codes
+    assert (2001, "SOT_AWAY") not in visible_codes
 
     assert all((opp.get("model_prob") or 0) >= 0.50 for opp in payload["top_opportunities"])
-    assert payload["filters"]["min_model_probability"] == 0.5
+    assert payload["filters"]["min_model_probability"] == main.MIN_MODEL_PROBABILITY
     assert payload["corners_odds_available"] is True
     assert payload["cards_odds_available"] is True
     assert payload["families"]["corners"]
@@ -471,3 +471,73 @@ def test_calcular_partido_keeps_detected_markets_without_advanced_stats():
 def test_dashboard_family_classifier_supports_corner_and_card_synonyms():
     assert main.infer_market_family("BOOKING_POINTS", "Total amarillas") == "Cards"
     assert main.infer_market_family("SAQUES_ESQUINA", "Esquinas totales") == "Corners"
+
+
+def test_implied_probability_formula_and_devig_1x2():
+    assert predictor.implied_prob(2.0) == 0.5
+    devig = predictor._remove_overround_1x2(2.0, 3.5, 4.0)
+    assert devig["overround"] is not None and devig["overround"] > 1.0
+    total = (devig["home"] or 0) + (devig["draw"] or 0) + (devig["away"] or 0)
+    assert round(total, 6) == 1.0
+
+
+def test_detected_market_keeps_model_prob_null_and_ev_null():
+    fixture = base_fixture()
+    fixture.update(
+        {
+            "gf_home": 0,
+            "ga_home": 0,
+            "gf_away": 0,
+            "ga_away": 0,
+            "families": {"fouls": [{"code": "FOULS_TOTAL", "market": "fouls_total", "pick": "Over 21.5", "odds": 1.91}]},
+        }
+    )
+    result = predictor.calcular_partido(fixture)
+    market = {item["code"]: item for item in result["market_breakdown"]}["FOULS_TOTAL"]
+    assert market["prob"] is None
+    assert market["ev"] is None
+    assert market["edge"] is None
+    assert market["market_complete"] is False
+
+
+def test_1x2_arbitrage_detected_only_when_sum_below_one():
+    fixture = base_fixture()
+    fixture["bookmakers"] = [
+        {"name": "A", "markets": [{"name": "1X2", "outcomes": [{"name": "home", "odd": 2.2}, {"name": "draw", "odd": 3.1}, {"name": "away", "odd": 3.2}]}]},
+        {"name": "B", "markets": [{"name": "1X2", "outcomes": [{"name": "home", "odd": 2.1}, {"name": "draw", "odd": 3.6}, {"name": "away", "odd": 3.9}]}]},
+    ]
+    arbs = predictor.detect_1x2_arbitrage(fixture)
+    assert arbs and arbs[0]["arbitrage"] is True
+    assert arbs[0]["implied_sum"] < 1
+
+
+def test_ev_formula_matches_calibrated_prob_times_odds_minus_one():
+    fixture = base_fixture()
+    fixture.update({"odds": {"over25": 2.0}})
+    result = predictor.calcular_partido(fixture)
+    market = next(item for item in result["market_breakdown"] if item["code"] == "OVER25")
+    if market["calibrated_prob"] is not None and market["cuota"] is not None:
+        assert abs(market["ev"] - (market["calibrated_prob"] * market["cuota"] - 1.0)) < 1e-5
+
+
+def test_recommended_requires_ready_and_calibrated_on_dashboard():
+    row = main.Prediction(
+        fixture_id=9991,
+        liga_id=1,
+        liga="L",
+        pais="C",
+        hora=datetime(2026, 4, 1, 18, 0, tzinfo=timezone.utc),
+        estado="NS",
+        local="A",
+        visitante="B",
+        market_breakdown=[
+            {"code": "OVER25", "mercado": "Goles", "jugada": "Over 2.5", "prob": 0.62, "calibration_status": "ready", "cuota": 2.0, "probabilidad_implicita": 0.5, "probabilidad_justa": 0.49, "edge": 0.12, "ev": 0.24, "market_complete": True},
+            {"code": "EXACT_SCORE_1_0", "mercado": "Exact score", "jugada": "1-0", "prob": None, "calibration_status": "missing", "cuota": 7.0, "probabilidad_implicita": 0.14, "edge": None, "ev": None, "market_complete": False},
+        ],
+        apuestas_fuertes=[],
+    )
+    payload = main.build_dashboard_payload([row], limit=20)
+    indexed = {x["code"]: x for x in payload["market_levels"]["mercado_detectado"] + payload["top_opportunities"]}
+    assert indexed["OVER25"]["is_recommended_pick"] is True
+    assert indexed["EXACT_SCORE_1_0"]["is_recommended_pick"] is False
+    assert indexed["EXACT_SCORE_1_0"]["calibration_status"] == "missing"

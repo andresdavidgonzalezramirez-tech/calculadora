@@ -129,7 +129,7 @@ function canonicalFamily(value) {
 }
 
 function classifyMarketLevel(opp) {
-  const prob = toNumber(opp.model_prob ?? opp.close_probability ?? opp.implied_prob);
+  const prob = toNumber(opp.model_prob ?? opp.close_probability);
   const ev = toNumber(opp.ev);
   const odds = toNumber(opp.odds);
   if (prob !== null && prob >= 0.5 && ev !== null && ev > 0) return "top_opportunity";
@@ -197,7 +197,7 @@ function normalizeOpportunity(raw) {
     model_prob: modelProb,
     implied_prob: impliedProb,
     delta_prob: deltaProb ?? ((modelProb !== null && impliedProb !== null) ? modelProb - impliedProb : null),
-    close_probability: closeProbability ?? modelProb,
+    close_probability: modelProb !== null ? (closeProbability ?? modelProb) : null,
     edge,
     ev,
     rank: toNumber(raw.rank),
@@ -218,7 +218,12 @@ function normalizeOpportunity(raw) {
   };
   normalized.market_complete = isCompleteOpportunity(normalized);
   normalized.market_level = raw.market_level || classifyMarketLevel(normalized);
-  normalized.publishable = raw.publishable === true || (normalized.odds !== null && normalized.market_level !== "descartado");
+  normalized.visible_en_panel = raw.visible_en_panel === true || normalized.odds !== null;
+  normalized.visibility_allowed = raw.visibility_allowed !== false;
+  normalized.recomendado = raw.recomendado === true;
+  normalized.arbitrage = raw.arbitrage === true;
+  normalized.publishable = raw.publishable === true || normalized.visible_en_panel;
+  normalized.label = raw.label || (normalized.arbitrage ? "Arbitraje detectado" : normalized.recomendado ? "Pick calculado" : normalized.market_complete ? "Mercado detectado" : "Pricing incompleto");
   if (!normalized.publishable && normalized.model_prob !== null && normalized.model_prob < MIN_MODEL_PROBABILITY) {
     normalized.reason_discard = normalized.reason_discard || "below_min_model_probability_50";
   }
@@ -227,6 +232,7 @@ function normalizeOpportunity(raw) {
 
 function opportunityBadges(opp) {
   const out = [];
+  out.push(`<span class="badge">${opp.label || "Mercado detectado"}</span>`);
   if (opp.flags.ev_plus) out.push('<span class="badge ev">EV+</span>');
   if (opp.flags.value) out.push('<span class="badge value">Value</span>');
   if (opp.flags.no_value) out.push('<span class="badge non-value">No Value</span>');
@@ -245,20 +251,20 @@ function createOpportunityCard(opp) {
   node.querySelector(".play").textContent = `Pick: ${opp.pick} · ${dateLabel(opp.hora)} · ${countdownLabel(opp.hora, opp.fixture_status_current || opp.estado)}`;
 
   const oddsLabel = fmtDecimal(opp.odds, 2) || "N/D";
-  const modelLabel = toPercent(opp.model_prob, 1) || "N/D";
-  const closeLabel = toPercent(opp.close_probability, 1) || modelLabel;
+  const modelLabel = toPercent(opp.model_prob, 1);
+  const closeLabel = toPercent(opp.close_probability, 1) || "N/D";
   const impliedLabel = toPercent(opp.implied_prob, 1) || "N/D";
   const deltaLabel = toSignedPercent(opp.delta_prob, 1) || "N/D";
   const edgeLabel = toSignedPercent(opp.edge, 1) || "N/D";
   const evLabel = fmtDecimal(opp.ev, 3) || "N/D";
-  const tier = probabilityTier(opp.close_probability ?? opp.model_prob);
+  const tier = probabilityTier(opp.model_prob);
 
   node.querySelector(".meta").innerHTML = `
     <div class="probability-main">
       <span class="probability-number">${closeLabel}</span>
       <span class="probability-tier ${tier.css}">${tier.label}</span>
     </div>
-    <div class="probability-sub">Prob modelo: <strong>${modelLabel}</strong> · Prob implícita: ${impliedLabel} · ΔProb: ${deltaLabel}</div>
+    <div class="probability-sub">${modelLabel ? `Prob modelo: <strong>${modelLabel}</strong> · ` : ""}Prob implícita: ${impliedLabel} · ΔProb: ${deltaLabel}</div>
   `;
   node.querySelector(".metrics").innerHTML = `<span class="metric metric-odds">Cuota <strong>${oddsLabel}</strong></span> · Riesgo: ${tier.label} · Edge: ${edgeLabel} · EV: ${evLabel} · Stake: ${opp.stake ?? "N/D"}`;
 
@@ -273,6 +279,7 @@ function renderOpportunityList(containerId, opportunities, emptyText) {
   const container = q(containerId);
   container.innerHTML = "";
   const safeRows = opportunities.filter((o) => {
+    if (o.visibility_allowed === false) return false;
     if (o.market_level === "top_opportunity") return true;
     if (o.market_level === "mercado_util") return true;
     if (o.market_level === "mercado_detectado") return o.odds !== null;

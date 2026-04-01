@@ -855,7 +855,7 @@ def _extract_detected_markets(fixture: Dict[str, Any]) -> List[Dict[str, Any]]:
                         "family_key": family_key,
                         "cuota": odd,
                         "probabilidad_implicita": implied,
-                        "prob": _round_prob(implied) if implied is not None else None,
+                        "prob": None,
                         "line": _parse_avg_number(item.get("line")),
                     }
                 )
@@ -884,7 +884,7 @@ def _extract_detected_markets(fixture: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "family_key": family_key,
                     "cuota": odd,
                     "probabilidad_implicita": implied,
-                    "prob": _round_prob(implied) if implied is not None else None,
+                    "prob": None,
                     "line": line,
                 }
             )
@@ -1011,6 +1011,60 @@ def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
     return odds
 
 
+def detect_1x2_arbitrage(fixture: Dict[str, Any]) -> List[Dict[str, Any]]:
+    bookmakers = fixture.get("bookmakers")
+    if not isinstance(bookmakers, list):
+        return []
+    best: Dict[str, Dict[str, Any]] = {}
+    for bookmaker in bookmakers:
+        if not isinstance(bookmaker, dict):
+            continue
+        bookmaker_name = str(bookmaker.get("name") or bookmaker.get("bookmaker") or bookmaker.get("title") or "unknown")
+        markets = bookmaker.get("markets") or bookmaker.get("bets") or []
+        if not isinstance(markets, list):
+            continue
+        for market in markets:
+            if not isinstance(market, dict):
+                continue
+            market_name = str(market.get("name") or market.get("key") or market.get("market") or "").upper()
+            if "1X2" not in market_name and "MATCH WINNER" not in market_name and "MATCH_WINNER" not in market_name:
+                continue
+            outcomes = market.get("outcomes") or market.get("values") or []
+            if not isinstance(outcomes, list):
+                continue
+            for outcome in outcomes:
+                if not isinstance(outcome, dict):
+                    continue
+                label = str(outcome.get("name") or outcome.get("value") or outcome.get("label") or "").strip().lower()
+                if label in {"home", "1", "local"}:
+                    outcome_key = "home"
+                elif label in {"draw", "x", "empate"}:
+                    outcome_key = "draw"
+                elif label in {"away", "2", "visitante"}:
+                    outcome_key = "away"
+                else:
+                    continue
+                odd = _safe_float(outcome.get("odd") or outcome.get("price") or outcome.get("decimal"), 0.0)
+                if odd <= 1.0:
+                    continue
+                prev = best.get(outcome_key)
+                if prev is None or odd > prev["odd"]:
+                    best[outcome_key] = {"odd": odd, "bookmaker": bookmaker_name}
+    if len(best) != 3:
+        return []
+    inv_sum = sum(1.0 / best[key]["odd"] for key in ("home", "draw", "away"))
+    if inv_sum >= 1.0:
+        return []
+    return [{
+        "market": "1X2",
+        "arbitrage": True,
+        "implied_sum": round(inv_sum, 6),
+        "margin": round(1.0 - inv_sum, 6),
+        "best_odds": {k: round(v["odd"], 4) for k, v in best.items()},
+        "bookmakers": {k: v["bookmaker"] for k, v in best.items()},
+    }]
+
+
 def _market_name(code: str, home_name: str, away_name: str) -> str:
     mapping = {
         "1X2_HOME": f"Gana {home_name}",
@@ -1109,7 +1163,7 @@ def _confidence_from_signal(prob: float, quality: float, edge: float, reliabilit
 def _pricing_flags(model_prob: float, fair_market_prob: Optional[float], odd: Optional[float], code: str) -> Dict[str, Any]:
     if fair_market_prob is None or odd is None or odd <= 1.0:
         return {
-            "edge": 0.0,
+            "edge": None,
             "es_value_bet": False,
             "soft_value": False,
             "posible_error_cuota": False,
@@ -1138,6 +1192,18 @@ def _pricing_flags(model_prob: float, fair_market_prob: Optional[float], odd: Op
     }
 
 
+def _kelly_stake_units(model_prob: Optional[float], odd: Optional[float], ev: Optional[float], market_complete: bool) -> Optional[float]:
+    if model_prob is None or odd is None or odd <= 1.0 or ev is None or ev <= 0.0 or not market_complete:
+        return None
+    b = odd - 1.0
+    q = 1.0 - model_prob
+    raw_fraction = ((b * model_prob) - q) / b if b > 0 else 0.0
+    if raw_fraction <= 0:
+        return None
+    conservative_fraction = raw_fraction * 0.25
+    return round(_clamp(conservative_fraction, 0.0, 0.05), 4)
+
+
 def _build_market(
     code: str,
     prob: float,
@@ -1151,6 +1217,7 @@ def _build_market(
     market_name_override: Optional[str] = None,
     market_group_override: Optional[str] = None,
 ) -> Dict[str, Any]:
+    raw_prob = _round_prob(prob)
     prob = _calibrated_binary_prob(prob, _clamp((quality * 0.68) + (data_quality * 0.32), 0.35, 1.0))
     reliability = _market_reliability(code)
     volatility = _market_volatility(code)
@@ -1175,12 +1242,13 @@ def _build_market(
         0.99,
     )
 
+    edge_component = max(min(pricing["edge"], 0.03), -0.015) if pricing["edge"] is not None else 0.0
     score = (
         close_probability * 0.52
         + reliability * 0.18
         + stability * 0.16
         + data_quality * 0.10
-        + max(min(pricing["edge"], 0.03), -0.015) * 0.10
+        + edge_component * 0.10
         - odd_penalty * 0.14
         - fragility * 0.06
     ) * ease_bonus
@@ -1189,6 +1257,10 @@ def _build_market(
         "code": code,
         "mercado": market_group_override or _market_group(code),
         "jugada": market_name_override or _market_name(code, home_name, away_name),
+        "raw_prob": raw_prob,
+        "calibrated_prob": prob,
+        "calibration_status": "ready",
+        "calibrator_version": "builtin_prob_cal_v1",
         "prob": prob,
         "cuota": odd,
         "edge": pricing["edge"],
@@ -1226,7 +1298,7 @@ def _select_primary_bet(markets: List[Dict[str, Any]]) -> Dict[str, Any]:
             "jugada": "Más de 1.5 goles",
             "prob": MIN_RENDER_PROBABILITY,
             "cuota": None,
-            "edge": 0.0,
+            "edge": None,
             "es_value_bet": False,
             "soft_value": False,
             "posible_error_cuota": False,
@@ -1237,21 +1309,21 @@ def _select_primary_bet(markets: List[Dict[str, Any]]) -> Dict[str, Any]:
             "data_quality": 0.50,
             "signal_tier": "watch",
             "score": 0.50,
-            "close_probability": MIN_RENDER_PROBABILITY,
+            "close_probability": None,
             "volatility": 0.50,
             "fragility": 0.50,
         }
 
     eligible = [
         m for m in markets
-        if m.get("prob", 0.0) >= MIN_RENDER_PROBABILITY
+        if (m.get("prob") is not None and m.get("prob", 0.0) >= MIN_RENDER_PROBABILITY)
         and m.get("stability", 0.0) >= 0.45
         and m.get("reliability", 0.0) >= 0.68
         and m.get("volatility", 1.0) <= MAX_ACCEPTABLE_VOLATILITY
         and m.get("data_quality", 0.0) >= 0.48
     ]
 
-    safe_pool = [m for m in markets if m.get("prob", 0.0) >= MIN_RENDER_PROBABILITY]
+    safe_pool = [m for m in markets if m.get("prob") is not None and m.get("prob", 0.0) >= MIN_RENDER_PROBABILITY]
     pool = eligible if eligible else safe_pool
     if not pool:
         return {
@@ -1260,7 +1332,7 @@ def _select_primary_bet(markets: List[Dict[str, Any]]) -> Dict[str, Any]:
             "jugada": "Sin pick >=60%",
             "prob": MIN_RENDER_PROBABILITY,
             "cuota": None,
-            "edge": 0.0,
+            "edge": None,
             "es_value_bet": False,
             "soft_value": False,
             "posible_error_cuota": False,
@@ -1271,7 +1343,7 @@ def _select_primary_bet(markets: List[Dict[str, Any]]) -> Dict[str, Any]:
             "data_quality": 0.0,
             "signal_tier": "watch",
             "score": 0.0,
-            "close_probability": MIN_RENDER_PROBABILITY,
+            "close_probability": None,
             "volatility": 1.0,
             "fragility": 1.0,
             "probabilidad_implicita": None,
@@ -1286,7 +1358,7 @@ def _select_primary_bet(markets: List[Dict[str, Any]]) -> Dict[str, Any]:
             item.get("stability", 0.0),
             -item.get("volatility", 1.0),
             item.get("score", 0.0),
-            max(min(item.get("edge", 0.0), 0.02), -0.02),
+            max(min(item.get("edge", 0.0) if item.get("edge") is not None else 0.0, 0.02), -0.02),
         ),
     )
 
@@ -1295,13 +1367,13 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ordered = sorted(
         markets,
         key=lambda item: (
-            item.get("close_probability", 0.0),
-            item.get("prob", 0.0),
-            item.get("reliability", 0.0),
-            item.get("stability", 0.0),
-            -item.get("volatility", 1.0),
-            item.get("score", 0.0),
-            max(min(item.get("edge", 0.0), 0.02), -0.02),
+            item.get("close_probability") if item.get("close_probability") is not None else 0.0,
+            item.get("prob") if item.get("prob") is not None else 0.0,
+            item.get("reliability") if item.get("reliability") is not None else 0.0,
+            item.get("stability") if item.get("stability") is not None else 0.0,
+            -(item.get("volatility") if item.get("volatility") is not None else 1.0),
+            item.get("score") if item.get("score") is not None else 0.0,
+            max(min(item.get("edge", 0.0) if item.get("edge") is not None else 0.0, 0.02), -0.02),
         ),
         reverse=True,
     )
@@ -1309,16 +1381,18 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for item in ordered:
         odd_value = item.get("cuota")
-        ev_value = (item.get("prob", 0.0) * odd_value - 1.0) if odd_value is not None else None
+        model_prob = item.get("prob")
+        ev_value = (model_prob * odd_value - 1.0) if odd_value is not None and model_prob is not None else None
         hard_filters = [
-            item.get("prob", 0.0) >= 0.50,
-            item.get("close_probability", 0.0) >= 0.50,
-            item.get("reliability", 0.0) >= 0.70,
-            item.get("stability", 0.0) >= 0.46,
-            item.get("volatility", 1.0) <= MAX_ACCEPTABLE_VOLATILITY,
-            item.get("data_quality", 0.0) >= 0.50,
-            item.get("fragility", 1.0) <= 0.56,
+            model_prob is not None and model_prob >= 0.50,
+            (item.get("close_probability") if item.get("close_probability") is not None else 0.0) >= 0.50,
+            (item.get("reliability") if item.get("reliability") is not None else 0.0) >= 0.70,
+            (item.get("stability") if item.get("stability") is not None else 0.0) >= 0.46,
+            (item.get("volatility") if item.get("volatility") is not None else 1.0) <= MAX_ACCEPTABLE_VOLATILITY,
+            (item.get("data_quality") if item.get("data_quality") is not None else 0.0) >= 0.50,
+            (item.get("fragility") if item.get("fragility") is not None else 1.0) <= 0.56,
             odd_value is not None,
+            item.get("edge") is not None,
             ev_value is not None and ev_value > 0.0,
         ]
         if not all(hard_filters):
@@ -1364,7 +1438,7 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     fallback = [
         item for item in ordered
-        if item.get("prob", 0.0) >= 0.50
+        if item.get("prob") is not None and item.get("prob", 0.0) >= 0.50
         and item.get("cuota") is not None
         and (item.get("prob", 0.0) * item.get("cuota", 0.0) - 1.0) > 0.0
     ][:3]
@@ -1871,22 +1945,26 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
                     "code": code,
                     "mercado": group,
                     "jugada": pick,
-                    "prob": _round_prob(implied) if implied is not None else MIN_MODEL_PROBABILITY,
+                    "raw_prob": None,
+                    "calibrated_prob": None,
+                    "calibration_status": "missing",
+                    "calibrator_version": None,
+                    "prob": None,
                     "cuota": odd,
-                    "edge": 0.0,
+                    "edge": None,
                     "es_value_bet": False,
                     "soft_value": False,
                     "posible_error_cuota": False,
                     "cuota_sospechosa": False,
                     "oportunidad_detectada": True,
                     "probabilidad_implicita": implied,
-                    "probabilidad_justa": implied,
+                    "probabilidad_justa": None,
                     "reliability": 0.46,
                     "stability": 0.42,
                     "data_quality": max(structural_quality, 0.30),
                     "signal_tier": "detected",
                     "score": 0.35,
-                    "close_probability": _round_prob(implied) if implied is not None else None,
+                    "close_probability": None,
                     "volatility": 0.74,
                     "fragility": 0.74,
                     "line": line,
@@ -1930,22 +2008,26 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
                 "code": code or f"DETECTED_{len(markets) + 1}",
                 "mercado": detected.get("mercado") or "Mercado detectado",
                 "jugada": detected.get("jugada") or "Mercado detectado sin pricing completo",
-                "prob": prob if prob is not None else MIN_MODEL_PROBABILITY,
+                "raw_prob": None,
+                "calibrated_prob": None,
+                "calibration_status": "missing",
+                "calibrator_version": None,
+                "prob": None,
                 "cuota": odd,
-                "edge": 0.0,
+                "edge": None,
                 "es_value_bet": False,
                 "soft_value": False,
                 "posible_error_cuota": False,
                 "cuota_sospechosa": False,
                 "oportunidad_detectada": True,
                 "probabilidad_implicita": implied,
-                "probabilidad_justa": implied,
+                "probabilidad_justa": None,
                 "reliability": 0.48,
                 "stability": 0.45,
                 "data_quality": max(structural_quality, 0.30),
                 "signal_tier": "detected",
                 "score": 0.40,
-                "close_probability": prob if prob is not None else implied,
+                "close_probability": None,
                 "volatility": 0.72,
                 "fragility": 0.72,
                 "line": detected.get("line"),
@@ -2048,7 +2130,17 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         else "EMPATE"
     )
 
-    confianza = _confidence_from_signal(best["prob"], best["data_quality"], best["edge"], best["reliability"], best["stability"])
+    best_edge = _safe_float(best.get("edge"), 0.0)
+    confianza = _confidence_from_signal(best.get("prob") or 0.5, best["data_quality"], best_edge, best["reliability"], best["stability"])
+    best_market_complete = bool(
+        best.get("cuota")
+        and best.get("prob") is not None
+        and best.get("probabilidad_implicita") is not None
+        and best.get("edge") is not None
+        and not best.get("detected_only")
+    )
+    best_ev = (best.get("cuota") * best.get("prob") - 1.0) if best.get("cuota") and best.get("prob") is not None else None
+    arbitrage_opportunities = detect_1x2_arbitrage(f)
 
     return {
         "fixture_id": int(f["fixture_id"]),
@@ -2088,10 +2180,10 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         "puerta_visitante": round(puerta_visitante, 3) if puerta_visitante is not None else None,
         "apuesta_principal": best["jugada"],
         "mercado_principal": best["mercado"],
-        "prob_apuesta": _round_prob(best["prob"]),
+        "prob_apuesta": _round_prob(best["prob"]) if best.get("prob") is not None else None,
         "cuota_principal": round(best["cuota"], 2) if best["cuota"] else None,
-        "edge_principal": round(best["edge"], 6),
-        "es_value_bet": 1 if best["es_value_bet"] else 0,
+        "edge_principal": round(best["edge"], 6) if best.get("edge") is not None else None,
+        "es_value_bet": 1 if best.get("es_value_bet") else 0,
         "confianza": confianza,
         "apuestas_fuertes": apuestas_fuertes,
         "posible_error_cuota": 1 if best["posible_error_cuota"] else 0,
@@ -2113,9 +2205,13 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
                 "code": item["code"],
                 "mercado": item["mercado"],
                 "jugada": item["jugada"],
-                "prob": round(item["prob"], 6),
+                "raw_prob": round(item["raw_prob"], 6) if item.get("raw_prob") is not None else None,
+                "calibrated_prob": round(item["calibrated_prob"], 6) if item.get("calibrated_prob") is not None else None,
+                "calibration_status": item.get("calibration_status", "missing"),
+                "calibrator_version": item.get("calibrator_version"),
+                "prob": round(item["prob"], 6) if item.get("prob") is not None else None,
                 "cuota": round(item["cuota"], 4) if item.get("cuota") else None,
-                "edge": round(item["edge"], 6),
+                "edge": round(item["edge"], 6) if item.get("edge") is not None else None,
                 "line": round(item["line"], 2) if item.get("line") is not None else None,
                 "reliability": round(item["reliability"], 4),
                 "stability": round(item["stability"], 4),
@@ -2123,18 +2219,37 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
                 "value": bool(item.get("es_value_bet") or item.get("soft_value")),
                 "probabilidad_implicita": round(item["probabilidad_implicita"], 6) if item.get("probabilidad_implicita") is not None else None,
                 "probabilidad_justa": round(item["probabilidad_justa"], 6) if item.get("probabilidad_justa") is not None else None,
-                "ev": round((item["cuota"] * item["prob"] - 1.0), 6) if item.get("cuota") else None,
-                "market_complete": bool(item.get("cuota") and item.get("probabilidad_implicita") is not None and not item.get("detected_only")),
-                "close_probability": round(item.get("close_probability", item["prob"]), 6),
+                "ev": round((item["cuota"] * item["prob"] - 1.0), 6) if item.get("cuota") and item.get("prob") is not None else None,
+                "market_complete": bool(
+                    item.get("cuota")
+                    and item.get("probabilidad_implicita") is not None
+                    and item.get("prob") is not None
+                    and item.get("edge") is not None
+                    and not item.get("detected_only")
+                ),
+                "close_probability": round(item.get("close_probability", item["prob"]), 6) if item.get("close_probability", item.get("prob")) is not None else None,
                 "volatility": round(item.get("volatility", 0.0), 4),
                 "fragility": round(item.get("fragility", 0.0), 4),
                 "detected_only": bool(item.get("detected_only")),
+                "delta_prob": round(item["prob"] - item["probabilidad_justa"], 6) if item.get("prob") is not None and item.get("probabilidad_justa") is not None else None,
+                "stake": _kelly_stake_units(
+                    item.get("prob"),
+                    item.get("cuota"),
+                    (item.get("cuota") * item.get("prob") - 1.0) if item.get("cuota") and item.get("prob") is not None else None,
+                    bool(
+                        item.get("cuota")
+                        and item.get("probabilidad_implicita") is not None
+                        and item.get("prob") is not None
+                        and item.get("edge") is not None
+                        and not item.get("detected_only")
+                    ),
+                ),
             }
             for item in markets
         ],
         "alert_level": _alert_level_from_best(best),
         "alert_title": _alert_title(_alert_level_from_best(best)),
-        "stake_sugerido_unidades": _stake_units(confianza, best["stability"], best["edge"], best["code"], best.get("close_probability", best["prob"]), best["reliability"], best.get("fragility", 0.5), best["data_quality"]),
+        "stake_sugerido_unidades": _kelly_stake_units(best.get("prob"), best.get("cuota"), best_ev, best_market_complete),
         "market_stability": round(best["stability"], 4),
         "market_reliability": round(best["reliability"], 4),
         "close_probability": round(best.get("close_probability", best["prob"]), 4),
@@ -2148,6 +2263,7 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         "shots_on_target_ready": shots_on_target_ready,
         "market_blocking_reasons": market_blocking_reasons,
         "families": families_payload,
+        "arbitrage_opportunities": arbitrage_opportunities,
         "corners_odds_available": bool(input_corners_odds_available),
         "cards_odds_available": bool(input_cards_odds_available),
     }
