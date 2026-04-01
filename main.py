@@ -167,6 +167,22 @@ def infer_market_family(code: Optional[str], market: Optional[str], family: Opti
     return "Secondary"
 
 
+def classify_market_level(
+    model_prob: Optional[float],
+    implied_prob: Optional[float],
+    ev: Optional[float],
+    odds: Optional[float],
+) -> str:
+    baseline_prob = model_prob if model_prob is not None else implied_prob
+    if (baseline_prob or 0) >= 0.50 and (ev is not None and ev > 0):
+        return "top_opportunity"
+    if (baseline_prob or 0) >= 0.40:
+        return "mercado_util"
+    if odds is not None:
+        return "mercado_detectado"
+    return "descartado"
+
+
 def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any]:
     rows_sorted = sorted(rows, key=lambda item: item.hora or datetime.max.replace(tzinfo=timezone.utc))
     partidos = [serialize_prediction(row) for row in rows_sorted[:limit]]
@@ -174,7 +190,6 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
     market_telemetry: Dict[str, Dict[str, Dict[str, Any]]] = {}
     all_opportunities: List[Dict[str, Any]] = []
     opportunities_ev: List[Dict[str, Any]] = []
-    top_by_family: Dict[str, List[Dict[str, Any]]] = {}
     country_map: Dict[str, Dict[str, Any]] = {}
     match_radar: List[Dict[str, Any]] = []
 
@@ -240,27 +255,16 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 "reliability": num_or_none(item.get("reliability"), 4),
                 "stability": num_or_none(item.get("stability"), 4),
             }
-            if market_complete and (model_prob or 0) >= 0.50 and (ev is not None and ev > 0):
-                opportunity["market_level"] = "top_opportunity"
-            elif (model_prob or implied_prob or 0) >= 0.40:
-                opportunity["market_level"] = "mercado_util"
-            elif odds is not None:
-                opportunity["market_level"] = "mercado_detectado"
-            else:
-                opportunity["market_level"] = "descartado"
+            opportunity["market_level"] = classify_market_level(model_prob, implied_prob, ev, odds)
 
             market_telemetry[fixture_key][opportunity["code"]] = opportunity
             all_opportunities.append(opportunity)
 
-            is_publishable = bool(
-                (model_prob is not None and model_prob >= MIN_MODEL_PROBABILITY)
-                or (model_prob is None and odds is not None)
-            )
+            is_publishable = bool(odds is not None and opportunity["market_level"] in {"top_opportunity", "mercado_util", "mercado_detectado"})
             opportunity["publishable"] = is_publishable
 
             if opportunity["flags"]["ev_plus"] and market_complete and is_publishable:
                 opportunities_ev.append(opportunity)
-                top_by_family.setdefault(family, []).append(opportunity)
                 included.append(opportunity)
             else:
                 if model_prob is None:
@@ -304,23 +308,17 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
     opportunities_ev_sorted = sorted(opportunities_ev, key=lambda item: (item.get("close_probability") or -1, item.get("ev") or -999), reverse=True)[:limit]
 
     level_a_top_opportunities = sorted(
-        [
-            item for item in all_opportunities
-            if item.get("market_complete") and (item.get("model_prob") or 0) >= 0.50 and (item.get("ev") is not None and item.get("ev") > 0)
-        ],
+        [item for item in all_opportunities if item.get("market_level") == "top_opportunity" and item.get("publishable")],
         key=lambda item: (item.get("close_probability") or -1, item.get("edge") or -999),
         reverse=True,
     )[:limit]
     level_b_useful_market = sorted(
-        [
-            item for item in all_opportunities
-            if (item.get("model_prob") or item.get("implied_prob") or 0) >= 0.40
-        ],
+        [item for item in all_opportunities if item.get("market_level") == "mercado_util" and item.get("publishable")],
         key=lambda item: (item.get("close_probability") or -1, item.get("edge") or -999),
         reverse=True,
     )[:limit]
     level_c_detected_market = sorted(
-        [item for item in all_opportunities if item.get("odds") is not None],
+        [item for item in all_opportunities if item.get("market_level") == "mercado_detectado" and item.get("publishable")],
         key=lambda item: (item.get("close_probability") or -1, item.get("odds") or -999),
         reverse=True,
     )[:limit]

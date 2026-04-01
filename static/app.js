@@ -93,7 +93,54 @@ function probabilityTier(prob) {
   return { label: "Riesgo alto", css: "risk-highest" };
 }
 
+const FAMILY_ALIASES = {
+  "1x2": "1X2",
+  match_winner: "1X2",
+  "match winner": "1X2",
+  goals: "Goals",
+  goal: "Goals",
+  btts: "BTTS",
+  corners: "Corners",
+  corner: "Corners",
+  cards: "Cards",
+  card: "Cards",
+  yellow: "Cards",
+  fouls: "Fouls",
+  foul: "Fouls",
+  offsides: "Offsides",
+  offside: "Offsides",
+  shots: "Shots",
+  shot: "Shots",
+  shots_on_target: "Shots on target",
+  shots_on_goal: "Shots on target",
+  shot_on_target: "Shots on target",
+  "shots on target": "Shots on target",
+  "double chance": "Double chance",
+  double_chance: "Double chance",
+  "exact score": "Exact score",
+  exact_score: "Exact score",
+  secondary: "Secondary",
+};
+
+function canonicalFamily(value) {
+  const key = String(value || "").trim().toLowerCase();
+  if (!key) return null;
+  return FAMILY_ALIASES[key] || null;
+}
+
+function classifyMarketLevel(opp) {
+  const prob = toNumber(opp.model_prob ?? opp.close_probability ?? opp.implied_prob);
+  const ev = toNumber(opp.ev);
+  const odds = toNumber(opp.odds);
+  if (prob !== null && prob >= 0.5 && ev !== null && ev > 0) return "top_opportunity";
+  if (prob !== null && prob >= 0.4) return "mercado_util";
+  if (odds !== null) return "mercado_detectado";
+  return "descartado";
+}
+
 function inferFamily(raw = {}) {
+  const mapped = canonicalFamily(raw.family || raw.family_key || raw.familyName);
+  if (mapped) return mapped;
   const token = [
     raw.family,
     raw.code,
@@ -117,7 +164,7 @@ function inferFamily(raw = {}) {
   if (["OFFSIDE", "OFFSIDES", "FUERA DE JUEGO"].some((k) => token.includes(k))) return "Offsides";
   if (["BTTS", "AMBOS MARCAN", "BOTH TEAMS TO SCORE"].some((k) => token.includes(k))) return "BTTS";
   if (["1X2", "DRAW", "EMPATE"].some((k) => token.includes(k))) return "1X2";
-  if (["EXACT SCORE", "MARCADOR EXACTO"].some((k) => token.includes(k))) return "Exact score";
+  if (["EXACT SCORE", "EXACT_SCORE", "MARCADOR EXACTO", "CORRECT SCORE"].some((k) => token.includes(k))) return "Exact score";
   if (["TEAM", "MARCARA", "SCORE YES", "GOLES EQUIPO", "GOALS", "GOLES", "OVER", "UNDER", "TOTAL"].some((k) => token.includes(k))) return "Goals";
   return "Secondary";
 }
@@ -170,7 +217,8 @@ function normalizeOpportunity(raw) {
     },
   };
   normalized.market_complete = isCompleteOpportunity(normalized);
-  normalized.publishable = normalized.market_complete && normalized.model_prob !== null && normalized.model_prob >= MIN_MODEL_PROBABILITY;
+  normalized.market_level = raw.market_level || classifyMarketLevel(normalized);
+  normalized.publishable = raw.publishable === true || (normalized.odds !== null && normalized.market_level !== "descartado");
   if (!normalized.publishable && normalized.model_prob !== null && normalized.model_prob < MIN_MODEL_PROBABILITY) {
     normalized.reason_discard = normalized.reason_discard || "below_min_model_probability_50";
   }
@@ -345,8 +393,8 @@ function renderMatchRadar(radarRows) {
   radarRows.forEach((row) => {
     const card = document.createElement("article");
     card.className = "match-card";
-    const included = (row.oportunidades_incluidas || []).map(normalizeOpportunity).filter((o) => o.model_prob === null || o.model_prob >= MIN_MODEL_PROBABILITY);
-    const excluded = (row.oportunidades_excluidas || []).map(normalizeOpportunity).filter((o) => o.model_prob === null || o.model_prob >= MIN_MODEL_PROBABILITY);
+    const included = (row.oportunidades_incluidas || []).map(normalizeOpportunity).filter((o) => o.publishable || o.odds !== null);
+    const excluded = (row.oportunidades_excluidas || []).map(normalizeOpportunity).filter((o) => o.publishable || o.odds !== null);
     card.innerHTML = `<div class="match-head"><strong>${row.equipos?.local || "Local"} vs ${row.equipos?.visitante || "Visitante"}</strong><span>${row.liga || "N/D"} · ${row.pais || "N/D"}</span><span>${dateLabel(row.hora)} · ${countdownLabel(row.hora, row.fixture_status_current || row.estado)}</span><span>Familias: ${(row.familias_detectadas || []).join(", ") || "N/D"}</span></div>`;
 
     const details = document.createElement("details");
@@ -378,10 +426,11 @@ function flattenFamilies(payload) {
   const families = payload.families || {};
   const rows = [];
   Object.entries(families).forEach(([family, items]) => {
+    const canonical = canonicalFamily(family) || inferFamily({ family });
     (items || []).forEach((row) => {
       rows.push(normalizeOpportunity({
         ...row,
-        family: row.family || family,
+        family: canonicalFamily(row.family) || canonical || inferFamily({ ...row, family }),
         market: row.market || row.mercado || row.code || family,
         pick: row.pick || row.jugada || "N/D",
         source: row.source || "families",
@@ -451,8 +500,8 @@ function buildUnifiedOpportunities(payload) {
 
   const unified = dedupeOpportunities(withFixtureContext(prioritized, matchMap));
   return {
-    complete: unified.filter((o) => o.market_complete && o.publishable),
-    incomplete: unified.filter((o) => !o.market_complete),
+    complete: unified.filter((o) => o.publishable),
+    incomplete: unified.filter((o) => !o.market_complete && o.odds !== null),
   };
 }
 
@@ -463,16 +512,13 @@ function getFamilyDataset(family, strictDataset, baseDataset) {
   if (state.filters.family) {
     return {
       rows: [],
-      notice: `No hay oportunidades completas para ${FAMILY_LABELS[family]} con los filtros activos.`,
+      notice: `Hay mercados detectados para ${FAMILY_LABELS[family]} pero no cumplen los filtros activos.`,
     };
   }
 
   const byFamilyRows = (state.byFamily[family.toLowerCase()] || state.byFamily[family] || []).map(normalizeOpportunity);
   const familyWithContext = withFixtureContext(byFamilyRows, new Map(state.matches.map((m) => [Number(m.fixture_id), m])));
-  const filteredByFamily = applyFilters(
-    familyWithContext.filter((o) => (o.model_prob !== null ? o.model_prob >= MIN_MODEL_PROBABILITY : o.odds !== null)),
-    { respectFamily: false },
-  );
+  const filteredByFamily = applyFilters(familyWithContext.filter((o) => o.publishable || o.odds !== null), { respectFamily: false });
   if (filteredByFamily.length) {
     return {
       rows: filteredByFamily.slice(0, 40),
@@ -490,7 +536,7 @@ function getFamilyDataset(family, strictDataset, baseDataset) {
 
   return {
     rows: [],
-    notice: `No hay oportunidades completas para ${FAMILY_LABELS[family]} con los filtros activos.`,
+    notice: `No hay mercados renderizables para ${FAMILY_LABELS[family]} con los filtros activos.`,
   };
 }
 
@@ -536,7 +582,7 @@ function bindFilters() {
 function populateFamilySelector() {
   const selector = q("filter-family");
   if (!selector) return;
-  const values = new Set(["1X2", "Goals", "BTTS", "Corners", "Cards", "Shots", "Shots on target", "Fouls", "Offsides", "Double chance", "Secondary"]);
+  const values = new Set(["1X2", "Goals", "BTTS", "Corners", "Cards", "Shots", "Shots on target", "Fouls", "Offsides", "Double chance", "Exact score", "Secondary"]);
   [...state.opportunities, ...state.incompleteOpportunities].forEach((opp) => {
     if (opp.family) values.add(opp.family);
   });
@@ -598,7 +644,7 @@ function renderFromState() {
     ["Double chance", "family-double-chance", "family-double-chance-incomplete", "Sin double chance para filtros activos."],
     ["Goals", "family-goals", "family-goals-incomplete", "Sin goals para filtros activos."],
     ["BTTS", "family-btts", "family-btts-incomplete", "Sin BTTS para filtros activos."],
-    ["Corners", "family-corners", "family-corners-incomplete", "No hay oportunidades..."],
+    ["Corners", "family-corners", "family-corners-incomplete", "Hay mercados disponibles pero no cumplen filtros de valor"],
     ["Cards", "family-cards", "family-cards-incomplete", "Hay mercados disponibles pero no cumplen filtros de valor"],
     ["Shots", "family-shots", "family-shots-incomplete", "Sin shots para filtros activos."],
     ["Shots on target", "family-shots-on-target", "family-shots-on-target-incomplete", "Sin shots on target para filtros activos."],
@@ -610,10 +656,10 @@ function renderFromState() {
   familySections.forEach(([family, target, incompleteTarget, empty]) => {
     const result = getFamilyDataset(family, strict, base);
     if (result.notice && (!state.filters.family || state.filters.family === family)) notices.push(result.notice);
-    const finalEmpty =
-      family === "Corners"
-        ? ((state.byFamily.corners || []).length ? "Hay mercados disponibles pero no cumplen filtros de valor" : "No hay oportunidades...")
-        : empty;
+    const familyBucket = state.byFamily[family.toLowerCase()] || state.byFamily[family] || [];
+    const finalEmpty = familyBucket.length
+      ? "Hay mercados detectados con odds válidas pendientes de pricing completo"
+      : empty;
     renderOpportunityList(target, result.rows, finalEmpty);
 
     const incomplete = getIncompleteFamilyDataset(family);
