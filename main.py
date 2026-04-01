@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import asc, desc, func, select
@@ -37,10 +37,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("calculadora.api")
 
+def normalize_path_prefix(raw_value: Optional[str]) -> str:
+    value = (raw_value or "").strip()
+    if not value or value == "/":
+        return ""
+    if not value.startswith("/"):
+        value = f"/{value}"
+    return value.rstrip("/")
+
+
+def get_app_root_path() -> str:
+    return normalize_path_prefix(os.getenv("APP_ROOT_PATH", os.getenv("ROOT_PATH", "")))
+
+
+def get_frontend_base_path() -> str:
+    return normalize_path_prefix(os.getenv("FRONTEND_BASE_PATH", get_app_root_path()))
+
+
+def get_runtime_port() -> int:
+    return int(os.getenv("PORT", os.getenv("APP_PORT", "8000")))
+
 
 def create_app() -> FastAPI:
-    root_path = os.getenv("ROOT_PATH", "").strip()
-    api = FastAPI(title="Proyecto Apuestas Reales", version="4.3.0", root_path=root_path)
+    api = FastAPI(title="Proyecto Apuestas Reales", version="4.3.0", root_path=get_app_root_path())
     init_db()
     return api
 
@@ -1214,7 +1233,9 @@ def _validation_error_response(exc: ValidationError, message: str) -> JSONRespon
 @app.get("/")
 def root():
     if STATIC_DIR.joinpath("index.html").exists():
-        return FileResponse(STATIC_DIR / "index.html")
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        html = html.replace("__FRONTEND_BASE_PATH__", get_frontend_base_path())
+        return HTMLResponse(content=html)
     return {
         "status": "ok",
         "health": "/health",
@@ -1267,6 +1288,11 @@ def health(db: Session = Depends(get_db)):
         "status": "ok",
         "version": app.version,
         "root_path": app.root_path,
+        "frontend_base_path": get_frontend_base_path(),
+        "root_path_source": "APP_ROOT_PATH/ROOT_PATH",
+        "app_root_path": get_app_root_path(),
+        "frontend_base_path_expected": get_frontend_base_path(),
+        "port": get_runtime_port(),
         "cors_origins": allow_origins,
         "fixtures": int(db.scalar(select(func.count()).select_from(Fixture)) or 0),
         "predictions": int(db.scalar(select(func.count()).select_from(Prediction)) or 0),
@@ -1493,6 +1519,7 @@ def panel_apuestas_fuertes(
 
 @app.get("/panel/dashboard")
 def panel_dashboard(
+    request: Request,
     liga_id: int = Query(0, ge=0),
     only_value: int = Query(0, ge=0, le=1),
     run_id: Optional[int] = Query(None, ge=1),
@@ -1538,13 +1565,21 @@ def panel_dashboard(
         "skipped": max(0, len(rows) - len(payload_rows)),
     }
     logger.info(
-        "Dashboard read run_id=%s workflow=%s queried=%s visible=%s hidden=%s returned=%s",
+        "Dashboard read path=%s root_path=%s run_id=%s workflow=%s queried=%s visible=%s hidden=%s returned=%s",
+        request.url.path,
+        app.root_path,
         payload["selected_run_id"],
         workflow_name,
         len(rows),
         len(visible_rows),
         len(hidden_rows),
         len(payload_rows[:limit]),
+    )
+    logger.debug(
+        "Dashboard headers host=%s x_forwarded_prefix=%s x_forwarded_proto=%s",
+        request.headers.get("host"),
+        request.headers.get("x-forwarded-prefix"),
+        request.headers.get("x-forwarded-proto"),
     )
     return payload
 

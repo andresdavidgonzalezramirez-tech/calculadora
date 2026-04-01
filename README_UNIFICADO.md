@@ -20,6 +20,10 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 - La app respeta `PORT` (EasyPanel) y también `APP_PORT`.
 - Health endpoint: `GET /health`.
 - Variables críticas: `DATABASE_URL`.
+- Rutas detrás de proxy:
+  - `APP_ROOT_PATH` (o legado `ROOT_PATH`): prefijo ASGI usado por FastAPI cuando el proxy publica en subpath.
+  - `FRONTEND_BASE_PATH`: prefijo usado por el frontend para llamar APIs (`/panel/*`, `/health`, etc).
+  - Para dominio público en raíz, usar ambos vacíos (`""`).
 
 ### Build y run
 ```bash

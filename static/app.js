@@ -68,14 +68,22 @@ const isFuture = (iso) => Number.isFinite(Date.parse(iso || "")) && Date.parse(i
 const dateLabel = (iso) => (!iso ? "Hora no informada" : new Intl.DateTimeFormat("es-ES", { dateStyle: "medium", timeStyle: "short", timeZone: DISPLAY_TIMEZONE }).format(new Date(iso)));
 const normalizeStatus = (value) => String(value || "").trim().toUpperCase();
 const isRenderableFixtureStatus = (status) => SCHEDULED_FIXTURE_STATUSES.has(normalizeStatus(status));
-const appBaseHref = (() => {
-  if (typeof window === "undefined") return "/";
-  const raw = window.location.pathname || "/";
-  return raw.endsWith("/") ? raw : `${raw}/`;
+const normalizeBasePath = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw || raw === "/") return "";
+  const withPrefix = raw.startsWith("/") ? raw : `/${raw}`;
+  return withPrefix.replace(/\/+$/, "");
+};
+const configuredFrontendBasePath = (() => {
+  if (typeof window === "undefined") return "";
+  const fromConfig = window.__APP_CONFIG__?.frontendBasePath;
+  const fromMeta = document.querySelector('meta[name="frontend-base-path"]')?.content;
+  return normalizeBasePath(fromConfig || fromMeta || "");
 })();
 const apiUrl = (path) => {
   const normalizedPath = String(path || "").replace(/^\.?\//, "");
-  return new URL(normalizedPath, `${window.location.origin}${appBaseHref}`).toString();
+  const basePath = configuredFrontendBasePath ? `${configuredFrontendBasePath}/` : "/";
+  return new URL(normalizedPath, `${window.location.origin}${basePath}`).toString();
 };
 const countdownLabel = (iso, status) => {
   const normalizedStatus = normalizeStatus(status);
