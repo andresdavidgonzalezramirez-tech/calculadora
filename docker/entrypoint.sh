@@ -34,4 +34,4 @@ init_db()
 print("DB lista y esquema inicializado")
 PY
 
-exec uvicorn "$APP_MODULE" --host "$APP_HOST" --port "$APP_PORT" --proxy-headers --no-server-header
+exec python -m uvicorn "$APP_MODULE" --host "$APP_HOST" --port "$APP_PORT" --proxy-headers --no-server-header
