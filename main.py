@@ -197,6 +197,10 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
             implied_prob = num_or_none(item.get("probabilidad_implicita"), 6)
             edge = num_or_none(item.get("edge"), 6)
             ev = num_or_none(item.get("ev"), 6)
+            if implied_prob is None and odds is not None and odds > 1:
+                implied_prob = round(1.0 / odds, 6)
+            if ev is None and model_prob is not None and odds is not None:
+                ev = round((model_prob * odds) - 1.0, 6)
             market_complete = bool(item.get("market_complete") and model_prob is not None and odds is not None and implied_prob is not None)
             family = infer_market_family(item.get("code"), item.get("mercado"), item.get("family"))
             detected_families.add(family)
@@ -349,8 +353,9 @@ def parse_dt(value: Any) -> Optional[datetime]:
         return None
     if isinstance(value, datetime):
         if value.tzinfo:
-            return value.astimezone(UTC_TIMEZONE)
-        return value.replace(tzinfo=UTC_TIMEZONE)
+            return value.astimezone(timezone.utc)
+        localized = value.replace(tzinfo=INGEST_DEFAULT_TIMEZONE)
+        return localized.astimezone(timezone.utc)
     if isinstance(value, str):
         raw = value.strip()
         if not raw:
@@ -359,8 +364,9 @@ def parse_dt(value: Any) -> Optional[datetime]:
         try:
             dt = datetime.fromisoformat(raw)
             if dt.tzinfo:
-                return dt.astimezone(UTC_TIMEZONE)
-            return dt.replace(tzinfo=UTC_TIMEZONE)
+                return dt.astimezone(timezone.utc)
+            localized = dt.replace(tzinfo=INGEST_DEFAULT_TIMEZONE)
+            return localized.astimezone(timezone.utc)
         except ValueError:
             return None
     return None

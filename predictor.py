@@ -544,7 +544,13 @@ def _collect_odds_map(raw_odds: Any) -> Dict[str, Any]:
     def _store(prefix: str, value: Any) -> None:
         key = prefix.lower().strip("_")
         if key:
-            normalized[key] = value
+            incoming = _safe_float(value, 0.0)
+            existing = _safe_float(normalized.get(key), 0.0)
+            if incoming > 1.0:
+                if incoming >= existing:
+                    normalized[key] = value
+            elif key not in normalized:
+                normalized[key] = value
 
     def _store_market_value(market_name: str, selection_name: str, odd_value: Any) -> None:
         market = _slug(market_name)
@@ -578,6 +584,22 @@ def _collect_odds_map(raw_odds: Any) -> Dict[str, Any]:
         for alias in aliases:
             _store(alias, odd_value)
             _store(f"{market}_{selection}_{alias}", odd_value)
+
+        line_match = re.search(r"(?:over|más_de|mas_de|above|under)\s*_?(\d+(?:[._]\d+)?)", selection)
+        if line_match:
+            line_token = line_match.group(1).replace(".", "_")
+            if "corner" in market:
+                _store(f"corners_over_{line_token}", odd_value)
+                if "home" in selection or "local" in selection:
+                    _store(f"corners_home_over_{line_token}", odd_value)
+                elif "away" in selection or "visitante" in selection:
+                    _store(f"corners_away_over_{line_token}", odd_value)
+            if any(token in market for token in ["card", "tarjet", "booking", "yellow"]):
+                _store(f"cards_over_{line_token}", odd_value)
+                if "home" in selection or "local" in selection:
+                    _store(f"cards_home_over_{line_token}", odd_value)
+                elif "away" in selection or "visitante" in selection:
+                    _store(f"cards_away_over_{line_token}", odd_value)
 
     def _walk(prefix: str, obj: Any) -> None:
         if hasattr(obj, "model_dump"):
@@ -733,7 +755,7 @@ def _extract_dynamic_over_markets(flat: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     families = {
         "corners": ("corners", "corner"),
-        "cards": ("cards", "card", "tarjet"),
+        "cards": ("cards", "card", "tarjet", "booking", "yellow", "amarilla"),
         "shots_on_target": ("shots_on_target", "sot", "shots_on", "tiros_a_puerta"),
         "shots": ("shots", "shot", "tiros"),
         "fouls": ("fouls", "foul", "faltas"),
@@ -1195,14 +1217,18 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     out: List[Dict[str, Any]] = []
     for item in ordered:
+        odd_value = item.get("cuota")
+        ev_value = (item.get("prob", 0.0) * odd_value - 1.0) if odd_value is not None else None
         hard_filters = [
-            item.get("prob", 0.0) >= PROBABILITY_FLOORS["medium"],
-            item.get("close_probability", 0.0) >= PROBABILITY_FLOORS["high"],
+            item.get("prob", 0.0) >= 0.50,
+            item.get("close_probability", 0.0) >= 0.50,
             item.get("reliability", 0.0) >= 0.70,
             item.get("stability", 0.0) >= 0.46,
             item.get("volatility", 1.0) <= MAX_ACCEPTABLE_VOLATILITY,
             item.get("data_quality", 0.0) >= 0.50,
             item.get("fragility", 1.0) <= 0.56,
+            odd_value is not None,
+            ev_value is not None and ev_value > 0.0,
         ]
         if not all(hard_filters):
             continue
@@ -1245,7 +1271,12 @@ def _strong_bets(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if out:
         return out
 
-    fallback = [item for item in ordered if item.get("prob", 0.0) >= PROBABILITY_FLOORS["medium"]][:3]
+    fallback = [
+        item for item in ordered
+        if item.get("prob", 0.0) >= 0.50
+        and item.get("cuota") is not None
+        and (item.get("prob", 0.0) * item.get("cuota", 0.0) - 1.0) > 0.0
+    ][:3]
     for item in fallback:
         out.append(
             {
@@ -1766,21 +1797,6 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
     if input_cards_odds_available:
         families_payload.setdefault("cards", [])
 
-    for item in dynamic_over_markets:
-        dynamic_family = str(item.get("family") or "").lower()
-        if dynamic_family not in {"corners", "cards"}:
-            continue
-        families_payload.setdefault(dynamic_family, []).append(
-            {
-                "code": item.get("source_key"),
-                "market": dynamic_family.capitalize(),
-                "pick": f"{dynamic_family} over {item.get('line')}",
-                "line": round(float(item["line"]), 2) if item.get("line") is not None else None,
-                "prob": None,
-                "odds": round(item.get("odd"), 4) if item.get("odd") else None,
-            }
-        )
-
     for item in markets:
         token = f"{item.get('code') or ''} {item.get('mercado') or ''} {item.get('jugada') or ''}".upper()
         family_key = "secondary"
@@ -1806,6 +1822,63 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
                 "odds": round(item.get("cuota"), 4) if item.get("cuota") else None,
             }
         )
+
+    if input_corners_odds_available and not families_payload.get("corners"):
+        fallback_odd = next(
+            (
+                odds.get(key)
+                for key in [
+                    "over75_corners",
+                    "over85_corners",
+                    "over95_corners",
+                    "corners_home_over_3_5",
+                    "corners_home_over_4_5",
+                    "corners_away_over_3_5",
+                    "corners_away_over_4_5",
+                ]
+                if odds.get(key) is not None
+            ),
+            None,
+        )
+        if fallback_odd is not None:
+            families_payload["corners"] = [
+                {
+                    "code": "CORNERS_FALLBACK",
+                    "market": "Corners",
+                    "pick": "Corners available",
+                    "line": None,
+                    "prob": round(_round_prob(prob_over_lambda(corners_totales or LEAGUE_BASELINES["corners_home"] + LEAGUE_BASELINES["corners_away"], 7.5)), 6),
+                    "odds": round(fallback_odd, 4),
+                }
+            ]
+
+    if input_cards_odds_available and not families_payload.get("cards"):
+        fallback_odd = next(
+            (
+                odds.get(key)
+                for key in [
+                    "over35_cards",
+                    "over45_cards",
+                    "cards_home_over_1_5",
+                    "cards_home_over_2_5",
+                    "cards_away_over_1_5",
+                    "cards_away_over_2_5",
+                ]
+                if odds.get(key) is not None
+            ),
+            None,
+        )
+        if fallback_odd is not None:
+            families_payload["cards"] = [
+                {
+                    "code": "CARDS_FALLBACK",
+                    "market": "Cards",
+                    "pick": "Cards available",
+                    "line": None,
+                    "prob": round(_round_prob(prob_over_lambda(tarjetas_totales or (LEAGUE_BASELINES["yellow_home"] + LEAGUE_BASELINES["yellow_away"]), 3.5)), 6),
+                    "odds": round(fallback_odd, 4),
+                }
+            ]
 
     best = _select_primary_bet(markets)
     apuestas_fuertes = _strong_bets(markets)
