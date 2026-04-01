@@ -127,6 +127,89 @@ def test_predict_invalid_numeric_type_returns_422(monkeypatch):
     assert any(item["field"] == "fixtures.0.cf_home" for item in payload["error"]["invalid_fields"])
 
 
+
+
+def test_predict_preserves_bookmakers_payload_for_odds_extraction(monkeypatch):
+    client, captured = _client_with_ingest_stub(monkeypatch)
+    fixture = base_fixture()
+    fixture["bookmakers"] = [
+        {
+            "id": 42,
+            "name": "Bet365",
+            "markets": [
+                {
+                    "name": "Match Winner",
+                    "values": [
+                        {"value": "Home", "odd": 1.91},
+                        {"value": "Draw", "odd": 3.55},
+                        {"value": "Away", "odd": 4.1},
+                    ],
+                }
+            ],
+        }
+    ]
+
+    response = client.post("/predict", json={"fixtures": [fixture]})
+
+    assert response.status_code == 200
+    normalized = captured["payload"].fixtures[0]
+    assert normalized.bookmakers[0]["id"] == 42
+    assert normalized.bookmakers[0]["name"] == "Bet365"
+
+
+def test_ingest_run_persists_odds_snapshot_from_bookmakers_source(monkeypatch):
+    main.app.dependency_overrides.clear()
+
+    fixture = base_fixture()
+    fixture["fixture_id"] = 9901
+    fixture["bookmakers"] = [
+        {
+            "id": 7,
+            "name": "Book A",
+            "markets": [
+                {
+                    "name": "Match Winner",
+                    "values": [
+                        {"value": "Home", "odd": 1.95},
+                        {"value": "Draw", "odd": 3.4},
+                        {"value": "Away", "odd": 3.9},
+                    ],
+                },
+                {
+                    "name": "Goals Over/Under",
+                    "values": [
+                        {"value": "Over 2.5", "odd": 1.87},
+                    ],
+                },
+            ],
+        }
+    ]
+
+    with db.SessionLocal() as session:
+        session.query(main.Prediction).filter(main.Prediction.fixture_id == fixture["fixture_id"]).delete()
+        session.query(main.Fixture).filter(main.Fixture.fixture_id == fixture["fixture_id"]).delete()
+        session.query(main.OddsSnapshot).filter(main.OddsSnapshot.fixture_id == fixture["fixture_id"]).delete()
+        session.commit()
+
+    client = TestClient(main.app)
+    response = client.post("/ingest/run", json={"fixtures": [fixture], "workflow_name": "test_ingest", "trigger_type": "manual"})
+    assert response.status_code == 200
+
+    with db.SessionLocal() as session:
+        snapshot = (
+            session.query(main.OddsSnapshot)
+            .filter(main.OddsSnapshot.fixture_id == fixture["fixture_id"])
+            .order_by(main.OddsSnapshot.snapshot_id.desc())
+            .first()
+        )
+        assert snapshot is not None
+        assert snapshot.bookmaker_id == 7
+        assert snapshot.bookmaker_name == "Book A"
+        assert snapshot.home == 1.95
+        assert snapshot.draw == 3.4
+        assert snapshot.away == 3.9
+        assert snapshot.over25 == 1.87
+
 def test_predict_classifies_publishable_core(monkeypatch):
     client, _ = _client_with_ingest_stub(monkeypatch)
     fixture = base_fixture()
