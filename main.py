@@ -254,6 +254,9 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
             market_complete = bool(item.get("market_complete") and calibrated_prob is not None and odds is not None and implied_prob is not None and edge is not None and ev is not None)
             anomaly_flag = bool(calibrated_prob is not None and market_fair_prob is not None and abs(calibrated_prob - market_fair_prob) > 0.20)
             readiness = "ready" if market_complete else "incomplete"
+            family = infer_market_family(item.get("code"), item.get("mercado"), item.get("family"))
+            detected_families.add(family)
+            fam_priority = family_priority(family)
             is_valid_signal = bool(
                 calibrated_prob is not None
                 and implied_prob is not None
@@ -266,10 +269,8 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 and calibrated_prob is not None and calibrated_prob >= MIN_MODEL_PROBABILITY
                 and readiness == "ready"
                 and calibration_status == "ready"
+                and family in {"1X2", "BTTS", "Double chance", "Goals", "Corners"}
             )
-            family = infer_market_family(item.get("code"), item.get("mercado"), item.get("family"))
-            detected_families.add(family)
-            fam_priority = family_priority(family)
             hide = bool(
                 ev is None or ev <= 0
                 or edge_price is None or edge_price <= 0
@@ -329,7 +330,7 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 "signal_degenerate": not is_valid_signal,
             }
             opportunity["market_level"] = classify_market_level(model_prob, implied_prob, ev, odds)
-            opportunity["visible_en_panel"] = publish_allowed
+            opportunity["visible_en_panel"] = not hide
             opportunity["recomendado"] = publish_allowed
             opportunity["arbitrage"] = bool(item.get("arbitrage") is True)
             opportunity["readiness"] = readiness
@@ -419,7 +420,7 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
         reverse=True,
     )[:limit]
     level_c_detected_market = sorted(
-        [item for item in all_opportunities if item.get("market_level") == "mercado_detectado" and item.get("visible_en_panel")],
+        [item for item in all_opportunities if item.get("market_level") == "mercado_detectado"],
         key=lambda item: (item.get("close_probability") or -1, item.get("odds") or -999),
         reverse=True,
     )[:limit]
@@ -1491,13 +1492,13 @@ def panel_dashboard(
 ):
     reference_now_utc = now_utc()
     selected_run_id = resolve_dashboard_run_id(db, run_id, workflow_name)
-    if selected_run_id is None:
-        return build_dashboard_payload([], limit=limit)
     stmt = select(
         Prediction,
         visible_fixture_status_expression().label("fixture_status_current"),
         fixture_datetime_expression().label("fixture_datetime_current"),
-    ).where(Prediction.source_run_id == selected_run_id)
+    )
+    if selected_run_id is not None:
+        stmt = stmt.where(Prediction.source_run_id == selected_run_id)
     if liga_id:
         stmt = stmt.where(Prediction.liga_id == liga_id)
     if only_value:
@@ -1514,7 +1515,7 @@ def panel_dashboard(
         prediction.estado = normalize_fixture_status(fixture_status) or prediction.estado
         visible_rows.append(prediction)
     payload = build_dashboard_payload(visible_rows[:limit], limit=limit)
-    payload["selected_run_id"] = int(selected_run_id)
+    payload["selected_run_id"] = int(selected_run_id) if selected_run_id is not None else None
     payload["workflow_name"] = workflow_name
     return payload
 
