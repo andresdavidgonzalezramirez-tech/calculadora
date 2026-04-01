@@ -14,6 +14,13 @@ const INITIAL_FILTERS = {
   quick: { only_ev: false, only_value: false, only_strong: false, secondary: false, next_matches: false, signal_heavy: false },
 };
 
+const deepClone = (value) => {
+  if (typeof globalThis.structuredClone === "function") {
+    return globalThis.structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value));
+};
+
 const state = {
   matches: [],
   opportunities: [],
@@ -22,7 +29,7 @@ const state = {
   byFamily: {},
   countryTree: [],
   summary: {},
-  filters: structuredClone(INITIAL_FILTERS),
+  filters: deepClone(INITIAL_FILTERS),
   ui: {
     validOnly: true,
     hideTraceability: true,
@@ -590,7 +597,7 @@ function bindFilters() {
   });
 
   q("reset-filters-btn")?.addEventListener("click", () => {
-    state.filters = structuredClone(INITIAL_FILTERS);
+    state.filters = deepClone(INITIAL_FILTERS);
     ["filter-country", "filter-league", "filter-team", "filter-market", "filter-family", "search-input", "odds-min", "odds-max", "ev-min", "ev-max", "edge-min", "edge-max"].forEach((id) => {
       if (q(id)) q(id).value = "";
     });
@@ -747,7 +754,8 @@ function setRefreshState(mode, text) {
 }
 
 async function fetchJson(path) {
-  const res = await fetch(apiUrl(path), { headers: { Accept: "application/json" } });
+  const url = apiUrl(path);
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
   return res.json();
 }
@@ -779,6 +787,11 @@ async function refreshDashboard() {
   btn.disabled = true;
   setRefreshState("loading", "Cargando");
   try {
+    const errorNode = q("dashboard-error");
+    if (errorNode) {
+      errorNode.hidden = true;
+      errorNode.textContent = "";
+    }
     const params = new URLSearchParams(window.location.search);
     const selectedRunId = params.get("run_id");
     const query = selectedRunId ? `?limit=3000&run_id=${encodeURIComponent(selectedRunId)}` : "?limit=3000";
@@ -808,7 +821,12 @@ async function refreshDashboard() {
     q("last-updated").textContent = `Última actualización: ${dateLabel(payload.generated_at || new Date().toISOString())}`;
     setRefreshState("ok", "Actualizado");
   } catch (e) {
-    console.error(e);
+    console.error("refreshDashboard failed", e);
+    const errorNode = q("dashboard-error");
+    if (errorNode) {
+      errorNode.hidden = false;
+      errorNode.textContent = `No se pudo cargar /panel/dashboard (${String(e?.message || "error desconocido")}).`;
+    }
     setRefreshState("error", "Error");
   } finally {
     btn.disabled = false;
