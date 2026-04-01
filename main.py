@@ -4,7 +4,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
@@ -566,12 +566,39 @@ class FixtureInput(BaseModel):
     cards_publish_allowed: Optional[bool] = None
     transport_allowed: Optional[bool] = None
     collection_meta: Dict[str, Any] = Field(default_factory=dict)
+    candidate_picks: List[Dict[str, Any]] = Field(default_factory=list)
 
 class IngestRunRequest(BaseModel):
     fixtures: List[FixtureInput] = Field(default_factory=list)
     workflow_name: str = "bankenban_ingest"
     trigger_type: str = "schedule"
     persist: bool = True
+
+
+class PredictPickOut(BaseModel):
+    fixture_id: int
+    market_key: str
+    market: str
+    pick: str
+    family: str = "Secondary"
+    family_priority: str = "experimental"
+    secondary_market: bool = True
+    odds: Optional[float] = None
+    implied_prob: Optional[float] = None
+    calibrated_prob: Optional[float] = None
+    edge_price: Optional[float] = None
+    ev: Optional[float] = None
+    confidence_score: float = 0.0
+    market_complete: bool = False
+    pricing_complete: bool = False
+    readiness: str = "incomplete"
+    anomaly_flag: bool = False
+    evaluation_attempted: bool = True
+    pick_status: Literal["publishable_core", "publishable_secondary", "traceable_only", "invalid"] = "invalid"
+    rank_score: float = 0.0
+    reason_discard: Optional[str] = None
+    blocking_reason: Optional[str] = None
+    contradiction_flags: List[str] = Field(default_factory=list)
 
 
 def upsert_fixture(db: Session, item: FixtureInput) -> None:
@@ -963,6 +990,162 @@ def coerce_predict_payload(payload: Any) -> IngestRunRequest:
     raise HTTPException(status_code=422, detail="Payload inválido. Usa {'fixtures': [...]} o un fixture único.")
 
 
+def _truthy_legacy(value: Any) -> bool:
+    return bool(value is True or str(value).strip().lower() in {"1", "true", "yes"})
+
+
+def _extract_candidate_picks(item: FixtureInput) -> List[Dict[str, Any]]:
+    raw_candidates = item.candidate_picks if isinstance(item.candidate_picks, list) else []
+    if raw_candidates:
+        return [candidate for candidate in raw_candidates if isinstance(candidate, dict)]
+
+    market_catalog = item.market_catalog if isinstance(item.market_catalog, list) else []
+    catalog_candidates = [candidate for candidate in market_catalog if isinstance(candidate, dict)]
+    if catalog_candidates:
+        return catalog_candidates
+
+    fallback: List[Dict[str, Any]] = []
+    for key, odd_value in (item.odds or {}).items():
+        fallback.append(
+            {
+                "market_key": str(key).upper(),
+                "market": str(key).upper(),
+                "pick": str(key).upper(),
+                "odds": odd_value,
+            }
+        )
+    return fallback
+
+
+def _classify_pick(candidate: Dict[str, Any], fixture_id: int) -> PredictPickOut:
+    odds = num_or_none(candidate.get("odds") or candidate.get("cuota"), 6)
+    implied_prob = num_or_none(candidate.get("implied_prob"), 6)
+    if implied_prob is None and odds is not None and odds > 1:
+        implied_prob = round(1.0 / odds, 6)
+    calibrated_prob = num_or_none(candidate.get("calibrated_prob") or candidate.get("prob") or candidate.get("model_prob"), 6)
+    market_complete = bool(candidate.get("market_complete")) or bool(odds is not None and implied_prob is not None and calibrated_prob is not None)
+    pricing_complete = bool(odds is not None and implied_prob is not None)
+    readiness = str(candidate.get("readiness") or ("ready" if market_complete else "incomplete")).lower()
+    anomaly_flag = bool(candidate.get("anomaly_flag"))
+    edge_price = round(calibrated_prob - implied_prob, 6) if calibrated_prob is not None and implied_prob is not None else None
+    ev = round((calibrated_prob * odds) - 1.0, 6) if calibrated_prob is not None and odds is not None else None
+    family = infer_market_family(candidate.get("market_key") or candidate.get("code"), candidate.get("market"), candidate.get("family"))
+    fam_priority = family_priority(family)
+    secondary_market = bool(candidate.get("secondary_market", family in SECONDARY_FAMILIES))
+    confidence_score = num_or_none(candidate.get("confidence_score") or candidate.get("confidence"), 4) or 0.0
+    evaluation_attempted = bool(candidate.get("evaluation_attempted", True))
+
+    mathematically_valid = bool(
+        odds is not None
+        and odds > MIN_ACTIONABLE_ODDS
+        and implied_prob is not None
+        and calibrated_prob is not None
+        and market_complete
+        and readiness == "ready"
+        and not anomaly_flag
+    )
+    publishable_strict = bool(
+        mathematically_valid
+        and ev is not None and ev > 0
+        and edge_price is not None and edge_price > 0
+        and implied_prob is not None and calibrated_prob is not None and abs(calibrated_prob - implied_prob) >= MIN_SIGNAL_DELTA
+    )
+    if publishable_strict and fam_priority == "core" and not secondary_market:
+        status = "publishable_core"
+    elif publishable_strict:
+        status = "publishable_secondary"
+    elif fixture_id and (candidate.get("market_key") or candidate.get("code")) and evaluation_attempted:
+        status = "traceable_only"
+    else:
+        status = "invalid"
+
+    contradiction_flags: List[str] = []
+    if _truthy_legacy(candidate.get("publish_allowed")) and ev is None:
+        contradiction_flags.append("publish_allowed_without_ev")
+    if _truthy_legacy(candidate.get("visible_en_panel")) and odds is None:
+        contradiction_flags.append("visible_en_panel_without_odds")
+    if _truthy_legacy(candidate.get("is_strong_pick")) and not market_complete:
+        contradiction_flags.append("is_strong_pick_without_market_complete")
+    if _truthy_legacy(candidate.get("recommended")) and (edge_price is None or edge_price <= 0):
+        contradiction_flags.append("recommended_without_positive_edge")
+
+    blocking_reason = None
+    reason_discard = None
+    if status in {"traceable_only", "invalid"}:
+        reason_discard = "failed_publishable_rules"
+        blocking_reason = "math_gating_blocked"
+
+    core_bonus = 0.2 if status == "publishable_core" else 0.0
+    anomaly_penalty = 1.0 if anomaly_flag else 0.0
+    fragility_penalty = 0.8 if not pricing_complete else 0.0
+    rank_score = round(
+        ((ev or 0.0) * 100.0) + ((edge_price or 0.0) * 50.0) + (confidence_score * 10.0) + core_bonus - anomaly_penalty - fragility_penalty,
+        4,
+    )
+
+    return PredictPickOut(
+        fixture_id=fixture_id,
+        market_key=str(candidate.get("market_key") or candidate.get("code") or "N/D"),
+        market=str(candidate.get("market") or candidate.get("mercado") or "N/D"),
+        pick=str(candidate.get("pick") or candidate.get("jugada") or "N/D"),
+        family=family,
+        family_priority=fam_priority,
+        secondary_market=secondary_market,
+        odds=odds,
+        implied_prob=implied_prob,
+        calibrated_prob=calibrated_prob,
+        edge_price=edge_price,
+        ev=ev,
+        confidence_score=confidence_score,
+        market_complete=market_complete,
+        pricing_complete=pricing_complete,
+        readiness=readiness,
+        anomaly_flag=anomaly_flag,
+        evaluation_attempted=evaluation_attempted,
+        pick_status=status,
+        rank_score=rank_score,
+        reason_discard=reason_discard,
+        blocking_reason=blocking_reason,
+        contradiction_flags=contradiction_flags,
+    )
+
+
+def _predict_rich_response(payload: IngestRunRequest) -> Dict[str, Any]:
+    fixtures_payload: List[Dict[str, Any]] = []
+    for fixture in payload.fixtures:
+        picks = [_classify_pick(candidate, fixture.fixture_id).model_dump() for candidate in _extract_candidate_picks(fixture)]
+        picks_sorted = sorted(picks, key=lambda row: row.get("rank_score") or -999, reverse=True)
+        fixtures_payload.append(
+            {
+                "fixture_id": fixture.fixture_id,
+                "fixture_summary": {
+                    "country": fixture.country,
+                    "league_name": fixture.league_name,
+                    "home_team_name": fixture.home_team_name,
+                    "away_team_name": fixture.away_team_name,
+                    "fixture_datetime": fixture.fixture_datetime,
+                },
+                "markets_evaluated": len(picks),
+                "publishable_core": [pick for pick in picks if pick["pick_status"] == "publishable_core"],
+                "publishable_secondary": [pick for pick in picks if pick["pick_status"] == "publishable_secondary"],
+                "traceable_only": [pick for pick in picks if pick["pick_status"] == "traceable_only"],
+                "invalid": [pick for pick in picks if pick["pick_status"] == "invalid"],
+                "top_picks": picks_sorted[:10],
+                "reasons_discard": sorted({pick["reason_discard"] for pick in picks if pick.get("reason_discard")}),
+                "contradictions_detected": [pick for pick in picks if pick.get("contradiction_flags")],
+                "family_summary": {
+                    "families_with_publishable": sorted({pick["family"] for pick in picks if pick["pick_status"].startswith("publishable")}),
+                    "families_empty": sorted({pick["family"] for pick in picks if not pick["pick_status"].startswith("publishable")}),
+                },
+            }
+        )
+    return {
+        "workflow_name": payload.workflow_name,
+        "fixtures_total": len(payload.fixtures),
+        "fixtures": fixtures_payload,
+    }
+
+
 def _expected_type_for_validation_error(error_type: str) -> str:
     if error_type in {"float_type", "float_parsing", "int_type", "int_parsing"}:
         return "number"
@@ -1143,9 +1326,31 @@ def predict_compat(payload: Any = Body(...), db: Session = Depends(get_db)):
     try:
         request = coerce_predict_payload(payload)
         response = ingest_run(request, db=db)
+        response["classification"] = _predict_rich_response(request)
         return response
     except ValidationError as exc:
         return _validation_error_response(exc, "Payload inválido para /predict")
+
+
+@app.post("/panel/cleanup-old-records")
+def cleanup_old_records(
+    keep_recent_hours: int = Query(168, ge=24, le=24 * 90),
+    db: Session = Depends(get_db),
+):
+    cutoff = utcnow() - timedelta(hours=keep_recent_hours)
+    deleted_alerts = db.query(PricingAlert).filter(PricingAlert.created_at < cutoff).delete()
+    deleted_runs = db.query(PredictionRun).filter(PredictionRun.finished_at.is_not(None), PredictionRun.finished_at < cutoff).delete()
+    deleted_snapshots = db.query(OddsSnapshot).filter(OddsSnapshot.snapshot_at < cutoff).delete()
+    db.commit()
+    return {
+        "cutoff": cutoff.isoformat(),
+        "deleted": {
+            "pricing_alerts": int(deleted_alerts or 0),
+            "prediction_runs": int(deleted_runs or 0),
+            "odds_snapshots": int(deleted_snapshots or 0),
+        },
+        "guardrails": "Predictions y fixtures recientes no se eliminan en esta limpieza.",
+    }
 
 
 @app.get("/predictions")
