@@ -79,7 +79,7 @@ MARKET_FAMILY_RULES = [
 SECONDARY_FAMILIES = {"Corners", "Cards", "Shots", "Secondary"}
 CORE_FAMILIES = {"1X2", "BTTS", "Double chance", "Goals"}
 SECONDARY_VISIBLE_FAMILIES = {"Corners", "Cards"}
-MIN_MODEL_PROBABILITY = float(os.getenv("MIN_MODEL_PROBABILITY", "0.40"))
+MIN_MODEL_PROBABILITY = float(os.getenv("MIN_MODEL_PROBABILITY", "0.20"))
 MIN_SIGNAL_DELTA = 0.02
 MIN_ACTIONABLE_ODDS = 1.05
 
@@ -89,6 +89,8 @@ DISPLAY_TIMEZONE = ZoneInfo(os.getenv("DISPLAY_TIMEZONE", "Europe/Warsaw"))
 INGEST_DEFAULT_TIMEZONE = ZoneInfo(os.getenv("INGEST_DEFAULT_TIMEZONE", "Europe/Warsaw"))
 UTC_TIMEZONE = ZoneInfo("UTC")
 VISIBILITY_FUTURE_WINDOW = timedelta(hours=int(os.getenv("VISIBILITY_FUTURE_WINDOW_HOURS", "72")))
+
+DEFAULT_WORKFLOW_NAME = os.getenv("PANEL_WORKFLOW_NAME", "bankenban_ingest")
 
 
 def normalize_fixture_status(status: Optional[str]) -> Optional[str]:
@@ -126,6 +128,17 @@ def apply_visibility_time_filter(stmt, reference_now_utc: datetime):
     return stmt.where(
         fixture_dt_expr >= reference_now_utc,
         fixture_dt_expr <= (reference_now_utc + VISIBILITY_FUTURE_WINDOW),
+    )
+
+
+def resolve_dashboard_run_id(db: Session, explicit_run_id: Optional[int], workflow_name: str) -> Optional[int]:
+    if explicit_run_id is not None and explicit_run_id > 0:
+        return explicit_run_id
+    return db.scalar(
+        select(func.max(PredictionRun.run_id)).where(
+            PredictionRun.workflow_name == workflow_name,
+            PredictionRun.status == "completed",
+        )
     )
 
 
@@ -250,7 +263,7 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 is_valid_signal
                 and ev is not None and ev > 0
                 and edge_price is not None and edge_price > 0
-                and calibrated_prob is not None and calibrated_prob >= 0.60
+                and calibrated_prob is not None and calibrated_prob >= MIN_MODEL_PROBABILITY
                 and readiness == "ready"
                 and calibration_status == "ready"
             )
@@ -324,12 +337,12 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
             opportunity["publish_allowed"] = publish_allowed
             opportunity["publish_allowed_base"] = publish_allowed_base
             opportunity["visibility_allowed"] = not hide
-            opportunity["is_strong_pick"] = bool(calibrated_prob is not None and calibrated_prob >= 0.60)
+            opportunity["is_strong_pick"] = bool(calibrated_prob is not None and calibrated_prob >= MIN_MODEL_PROBABILITY)
             opportunity["is_positive_bet"] = bool(ev is not None and ev > 0)
             opportunity["is_recommended_pick"] = publish_allowed
             opportunity["probability_tier"] = (
                 "elite" if calibrated_prob is not None and calibrated_prob >= 0.75
-                else "high" if calibrated_prob is not None and calibrated_prob >= 0.60
+                else "high" if calibrated_prob is not None and calibrated_prob >= MIN_MODEL_PROBABILITY
                 else "medium" if calibrated_prob is not None and calibrated_prob >= 0.50
                 else "low"
             )
@@ -1334,10 +1347,24 @@ def predict_compat(payload: Any = Body(...), db: Session = Depends(get_db)):
 
 @app.post("/panel/cleanup-old-records")
 def cleanup_old_records(
-    keep_recent_hours: int = Query(168, ge=24, le=24 * 90),
+    keep_recent_hours: int = Query(24, ge=24, le=24 * 90),
     db: Session = Depends(get_db),
 ):
     cutoff = utcnow() - timedelta(hours=keep_recent_hours)
+    old_run_ids = [
+        run_id
+        for (run_id,) in db.execute(
+            select(PredictionRun.run_id).where(
+                PredictionRun.finished_at.is_not(None),
+                PredictionRun.finished_at < cutoff,
+            )
+        ).all()
+    ]
+    deleted_predictions = 0
+    if old_run_ids:
+        deleted_predictions = db.query(Prediction).filter(Prediction.source_run_id.in_(old_run_ids)).delete(synchronize_session=False)
+    deleted_predictions_by_age = db.query(Prediction).filter(Prediction.updated_at.is_not(None), Prediction.updated_at < cutoff).delete(synchronize_session=False)
+    deleted_predictions += int(deleted_predictions_by_age or 0)
     deleted_alerts = db.query(PricingAlert).filter(PricingAlert.created_at < cutoff).delete()
     deleted_runs = db.query(PredictionRun).filter(PredictionRun.finished_at.is_not(None), PredictionRun.finished_at < cutoff).delete()
     deleted_snapshots = db.query(OddsSnapshot).filter(OddsSnapshot.snapshot_at < cutoff).delete()
@@ -1345,6 +1372,7 @@ def cleanup_old_records(
     return {
         "cutoff": cutoff.isoformat(),
         "deleted": {
+            "predictions": int(deleted_predictions or 0),
             "pricing_alerts": int(deleted_alerts or 0),
             "prediction_runs": int(deleted_runs or 0),
             "odds_snapshots": int(deleted_snapshots or 0),
@@ -1456,15 +1484,20 @@ def panel_apuestas_fuertes(
 def panel_dashboard(
     liga_id: int = Query(0, ge=0),
     only_value: int = Query(0, ge=0, le=1),
+    run_id: Optional[int] = Query(None, ge=1),
+    workflow_name: str = Query(DEFAULT_WORKFLOW_NAME, min_length=1),
     limit: int = Query(300, ge=1, le=3000),
     db: Session = Depends(get_db),
 ):
     reference_now_utc = now_utc()
+    selected_run_id = resolve_dashboard_run_id(db, run_id, workflow_name)
+    if selected_run_id is None:
+        return build_dashboard_payload([], limit=limit)
     stmt = select(
         Prediction,
         visible_fixture_status_expression().label("fixture_status_current"),
         fixture_datetime_expression().label("fixture_datetime_current"),
-    )
+    ).where(Prediction.source_run_id == selected_run_id)
     if liga_id:
         stmt = stmt.where(Prediction.liga_id == liga_id)
     if only_value:
@@ -1480,7 +1513,10 @@ def panel_dashboard(
             continue
         prediction.estado = normalize_fixture_status(fixture_status) or prediction.estado
         visible_rows.append(prediction)
-    return build_dashboard_payload(visible_rows[:limit], limit=limit)
+    payload = build_dashboard_payload(visible_rows[:limit], limit=limit)
+    payload["selected_run_id"] = int(selected_run_id)
+    payload["workflow_name"] = workflow_name
+    return payload
 
 
 @app.get("/alerts")

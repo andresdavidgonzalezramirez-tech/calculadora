@@ -56,7 +56,7 @@ const FAMILY_LABELS = {
   "Exact score": "Exact score",
   "Secondary": "Secondary",
 };
-const MIN_MODEL_PROBABILITY = 0.4;
+const MIN_MODEL_PROBABILITY = 0.2;
 const MIN_SIGNAL_DELTA = 0.02;
 const MIN_ACTIONABLE_ODDS = 1.05;
 const SCHEDULED_FIXTURE_STATUSES = new Set(["NS"]);
@@ -253,7 +253,7 @@ function normalizeOpportunity(raw) {
   normalized.publishable = normalized.publish_allowed;
   normalized.label = raw.label || (normalized.arbitrage ? "Arbitraje detectado" : normalized.recomendado ? "Pick calculado" : normalized.market_complete ? "Mercado detectado" : "Pricing incompleto");
   if (!normalized.publishable && normalized.model_prob !== null && normalized.model_prob < MIN_MODEL_PROBABILITY) {
-    normalized.reason_discard = normalized.reason_discard || "below_min_model_probability_50";
+    normalized.reason_discard = normalized.reason_discard || `below_min_model_probability_${Math.round(MIN_MODEL_PROBABILITY * 100)}`;
   }
   return normalized;
 }
@@ -599,7 +599,7 @@ function bindFilters() {
   });
   q("cleanup-old-records")?.addEventListener("click", async () => {
     try {
-      const res = await fetch("/panel/cleanup-old-records?keep_recent_hours=168", { method: "POST" });
+      const res = await fetch("/panel/cleanup-old-records?keep_recent_hours=24", { method: "POST" });
       if (!res.ok) throw new Error(`cleanup failed ${res.status}`);
       await refreshDashboard();
     } catch (e) {
@@ -762,7 +762,10 @@ async function refreshDashboard() {
   btn.disabled = true;
   setRefreshState("loading", "Cargando");
   try {
-    const payload = await fetchJson("/panel/dashboard?limit=3000");
+    const params = new URLSearchParams(window.location.search);
+    const selectedRunId = params.get("run_id");
+    const query = selectedRunId ? `?limit=3000&run_id=${encodeURIComponent(selectedRunId)}` : "?limit=3000";
+    const payload = await fetchJson(`/panel/dashboard${query}`);
     state.matches = (payload.partidos || []).filter((m) => isRenderableFixtureStatus(m.fixture_status_current || m.estado));
     const filteredPayload = {
       ...payload,

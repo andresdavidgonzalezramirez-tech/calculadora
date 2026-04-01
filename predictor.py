@@ -7,6 +7,7 @@ MAX_GOALS = 10
 MAX_EVENTS = 40
 EPSILON = 1e-9
 MIN_SIGNAL_DELTA = 0.02
+MIN_RENDER_PROBABILITY = 0.20
 INTEGRITY_HIGH_ODD_THRESHOLD = 2.6
 INTEGRITY_HIGH_MODEL_PROB_THRESHOLD = 0.62
 INTEGRITY_SUSPICIOUS_EDGE_FLOOR = 0.10
@@ -77,10 +78,9 @@ STABLE_MARKET_PRIORITY = {
 
 PROBABILITY_FLOORS = {
     "strict": 0.64,
-    "high": 0.60,
-    "medium": 0.60,
+    "high": MIN_RENDER_PROBABILITY,
+    "medium": MIN_RENDER_PROBABILITY,
 }
-MIN_RENDER_PROBABILITY = 0.60
 MAX_ACCEPTABLE_VOLATILITY = 0.55
 
 
@@ -1339,7 +1339,7 @@ def _select_primary_bet(markets: List[Dict[str, Any]]) -> Dict[str, Any]:
         return {
             "code": "NO_BET",
             "mercado": "Secondary",
-            "jugada": "Sin pick >=60%",
+            "jugada": "Sin pick >=20%",
             "prob": MIN_RENDER_PROBABILITY,
             "cuota": None,
             "edge": None,
