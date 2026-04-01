@@ -26,7 +26,7 @@ const state = {
   ui: {
     validOnly: true,
     hideTraceability: true,
-    hideEmptyFixtures: true,
+    hideEmptyFixtures: false,
     includeSecondaryWhenValidOnly: true,
   },
 };
@@ -68,6 +68,15 @@ const isFuture = (iso) => Number.isFinite(Date.parse(iso || "")) && Date.parse(i
 const dateLabel = (iso) => (!iso ? "Hora no informada" : new Intl.DateTimeFormat("es-ES", { dateStyle: "medium", timeStyle: "short", timeZone: DISPLAY_TIMEZONE }).format(new Date(iso)));
 const normalizeStatus = (value) => String(value || "").trim().toUpperCase();
 const isRenderableFixtureStatus = (status) => SCHEDULED_FIXTURE_STATUSES.has(normalizeStatus(status));
+const appBaseHref = (() => {
+  if (typeof window === "undefined") return "/";
+  const raw = window.location.pathname || "/";
+  return raw.endsWith("/") ? raw : `${raw}/`;
+})();
+const apiUrl = (path) => {
+  const normalizedPath = String(path || "").replace(/^\.?\//, "");
+  return new URL(normalizedPath, `${window.location.origin}${appBaseHref}`).toString();
+};
 const countdownLabel = (iso, status) => {
   const normalizedStatus = normalizeStatus(status);
   if (SCHEDULED_FIXTURE_STATUSES.has(normalizedStatus)) return "Próximo";
@@ -535,7 +544,7 @@ function buildUnifiedOpportunities(payload) {
   const unified = dedupeOpportunities(withFixtureContext(prioritized, matchMap));
   return {
     complete: unified.filter((o) => o.publishable),
-    incomplete: [],
+    incomplete: unified.filter((o) => !o.publishable),
   };
 }
 
@@ -599,7 +608,7 @@ function bindFilters() {
   });
   q("cleanup-old-records")?.addEventListener("click", async () => {
     try {
-      const res = await fetch("/panel/cleanup-old-records?keep_recent_hours=24", { method: "POST" });
+      const res = await fetch(apiUrl("panel/cleanup-old-records?keep_recent_hours=24"), { method: "POST" });
       if (!res.ok) throw new Error(`cleanup failed ${res.status}`);
       await refreshDashboard();
     } catch (e) {
@@ -730,7 +739,7 @@ function setRefreshState(mode, text) {
 }
 
 async function fetchJson(path) {
-  const res = await fetch(path, { headers: { Accept: "application/json" } });
+  const res = await fetch(apiUrl(path), { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
   return res.json();
 }
@@ -765,13 +774,13 @@ async function refreshDashboard() {
     const params = new URLSearchParams(window.location.search);
     const selectedRunId = params.get("run_id");
     const query = selectedRunId ? `?limit=3000&run_id=${encodeURIComponent(selectedRunId)}` : "?limit=3000";
-    const payload = await fetchJson(`/panel/dashboard${query}`);
-    state.matches = (payload.partidos || []).filter((m) => isRenderableFixtureStatus(m.fixture_status_current || m.estado));
+    const payload = await fetchJson(`panel/dashboard${query}`);
+    state.matches = Array.isArray(payload.partidos) ? payload.partidos : [];
     const filteredPayload = {
       ...payload,
       partidos: state.matches,
-      match_radar: (payload.match_radar || []).filter((m) => isRenderableFixtureStatus(m.fixture_status_current || m.estado)),
-      oportunidades_ev: (payload.oportunidades_ev || []).filter((o) => isRenderableFixtureStatus(o.fixture_status_current || o.estado)),
+      match_radar: Array.isArray(payload.match_radar) ? payload.match_radar : [],
+      oportunidades_ev: Array.isArray(payload.oportunidades_ev) ? payload.oportunidades_ev : [],
     };
     const unified = buildUnifiedOpportunities(filteredPayload);
     state.opportunities = unified.complete;
@@ -780,6 +789,11 @@ async function refreshDashboard() {
     state.byFamily = payload.families || {};
     state.countryTree = payload.paises || [];
     state.summary = computeSummary(payload);
+    const debug = payload.debug || {};
+    const debugNode = q("debug-run");
+    if (debugNode) {
+      debugNode.textContent = `run_id=${debug.run_id ?? "N/D"} · fixtures_total=${debug.fixtures_total ?? 0} · processed=${debug.processed ?? 0} · skipped=${debug.skipped ?? 0} · dashboard_read=${debug.fixtures_visible ?? 0}`;
+    }
     populateSelectors();
     syncToggleButtons();
     renderFromState();

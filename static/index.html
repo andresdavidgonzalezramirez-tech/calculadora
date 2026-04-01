@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>BANKENBANK · Operations Console</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="./static/styles.css" />
   </head>
   <body>
     <main class="app-shell">
@@ -25,6 +25,9 @@
           <div class="refresh-meta">
             <span id="refresh-state" class="badge status-badge neutral">Idle</span>
             <span id="last-updated">Última actualización: --</span>
+          </div>
+          <div class="refresh-meta">
+            <span id="debug-run">run_id=N/D · fixtures_total=0 · processed=0 · skipped=0 · dashboard_read=0</span>
           </div>
         </div>
       </header>
@@ -91,6 +94,6 @@
       </article>
     </template>
 
-    <script src="/static/app.js"></script>
+    <script src="./static/app.js"></script>
   </body>
 </html>

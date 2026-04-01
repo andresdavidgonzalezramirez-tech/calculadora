@@ -39,7 +39,8 @@ logger = logging.getLogger("calculadora.api")
 
 
 def create_app() -> FastAPI:
-    api = FastAPI(title="Proyecto Apuestas Reales", version="4.3.0")
+    root_path = os.getenv("ROOT_PATH", "").strip()
+    api = FastAPI(title="Proyecto Apuestas Reales", version="4.3.0", root_path=root_path)
     init_db()
     return api
 
@@ -1265,6 +1266,7 @@ def health(db: Session = Depends(get_db)):
     return {
         "status": "ok",
         "version": app.version,
+        "root_path": app.root_path,
         "cors_origins": allow_origins,
         "fixtures": int(db.scalar(select(func.count()).select_from(Fixture)) or 0),
         "predictions": int(db.scalar(select(func.count()).select_from(Prediction)) or 0),
@@ -1314,18 +1316,26 @@ def ingest_run(payload: IngestRunRequest, db: Session = Depends(get_db)):
         run.notes = " | ".join(errors[:10]) if errors else f"Procesados={processed}, omitidos={skipped}"
 
         db.commit()
+        persisted_predictions = int(
+            db.scalar(
+                select(func.count()).select_from(Prediction).where(Prediction.source_run_id == run.run_id)
+            )
+            or 0
+        )
         logger.info(
-            "Ingest finalizado run_id=%s total=%s procesados=%s omitidos=%s",
+            "Ingest finalizado run_id=%s total=%s procesados=%s omitidos=%s persistidos=%s",
             run.run_id,
             len(payload.fixtures),
             processed,
             skipped,
+            persisted_predictions,
         )
         return {
             "run_id": run.run_id,
             "fixtures_total": len(payload.fixtures),
             "processed": processed,
             "skipped": skipped,
+            "persisted": persisted_predictions,
             "count": len(results),
             "errors": errors[:10],
         }
@@ -1504,19 +1514,38 @@ def panel_dashboard(
     if only_value:
         stmt = stmt.where(Prediction.es_value_bet == 1)
 
-    stmt = apply_visible_fixture_filter(stmt)
-    stmt = apply_visibility_time_filter(stmt, reference_now_utc)
     stmt = stmt.order_by(asc(Prediction.hora), asc(Prediction.liga)).limit(limit)
     rows = db.execute(stmt).all()
     visible_rows: List[Prediction] = []
+    hidden_rows: List[Prediction] = []
     for prediction, fixture_status, fixture_dt in rows:
-        if not is_fixture_visible(fixture_status, fixture_dt, reference_now_utc):
-            continue
         prediction.estado = normalize_fixture_status(fixture_status) or prediction.estado
-        visible_rows.append(prediction)
-    payload = build_dashboard_payload(visible_rows[:limit], limit=limit)
+        if is_fixture_visible(fixture_status, fixture_dt, reference_now_utc):
+            visible_rows.append(prediction)
+        else:
+            hidden_rows.append(prediction)
+
+    payload_rows = visible_rows if visible_rows else [*visible_rows, *hidden_rows]
+    payload = build_dashboard_payload(payload_rows[:limit], limit=limit)
     payload["selected_run_id"] = int(selected_run_id) if selected_run_id is not None else None
     payload["workflow_name"] = workflow_name
+    payload["debug"] = {
+        "run_id": int(selected_run_id) if selected_run_id is not None else None,
+        "fixtures_total": len(rows),
+        "fixtures_visible": len(visible_rows),
+        "fixtures_hidden": len(hidden_rows),
+        "processed": len(payload_rows),
+        "skipped": max(0, len(rows) - len(payload_rows)),
+    }
+    logger.info(
+        "Dashboard read run_id=%s workflow=%s queried=%s visible=%s hidden=%s returned=%s",
+        payload["selected_run_id"],
+        workflow_name,
+        len(rows),
+        len(visible_rows),
+        len(hidden_rows),
+        len(payload_rows[:limit]),
+    )
     return payload
 
 
