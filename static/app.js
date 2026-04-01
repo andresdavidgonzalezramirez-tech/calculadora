@@ -50,7 +50,7 @@ const FAMILY_LABELS = {
   "Exact score": "Exact score",
   "Secondary": "Secondary",
 };
-const MIN_MODEL_PROBABILITY = 0.5;
+const MIN_MODEL_PROBABILITY = 0.4;
 const SCHEDULED_FIXTURE_STATUSES = new Set(["NS"]);
 const DISPLAY_TIMEZONE = "Europe/Warsaw";
 
@@ -224,7 +224,10 @@ function createOpportunityCard(opp) {
 function renderOpportunityList(containerId, opportunities, emptyText) {
   const container = q(containerId);
   container.innerHTML = "";
-  const safeRows = opportunities.filter((o) => o.model_prob === null || o.model_prob >= MIN_MODEL_PROBABILITY);
+  const safeRows = opportunities.filter((o) => {
+    if (o.model_prob !== null) return o.model_prob >= MIN_MODEL_PROBABILITY;
+    return o.odds !== null;
+  });
   if (!safeRows.length) return (container.innerHTML = `<p class="empty">${emptyText}</p>`);
   safeRows.forEach((o) => container.appendChild(createOpportunityCard(o)));
 }
@@ -259,9 +262,6 @@ function applyFilters(opps, options = {}) {
 
     if (!cfg.relaxQuick) {
       const quick = state.filters.quick;
-      if (quick.only_ev && !o.flags.ev_plus) return false;
-      if (quick.only_value && !o.flags.value) return false;
-      if (quick.only_strong && !o.flags.strong_signal) return false;
       if (quick.secondary && !o.flags.secondary_market) return false;
       if (quick.next_matches && !isFuture(o.hora)) return false;
       if (quick.signal_heavy && (toNumber(o.rank) === null || toNumber(o.rank) < 2)) return false;
@@ -460,13 +460,16 @@ function getFamilyDataset(family, strictDataset, baseDataset) {
     };
   }
 
-  const byFamilyRows = (state.byFamily[family] || []).map(normalizeOpportunity);
+  const byFamilyRows = (state.byFamily[family.toLowerCase()] || state.byFamily[family] || []).map(normalizeOpportunity);
   const familyWithContext = withFixtureContext(byFamilyRows, new Map(state.matches.map((m) => [Number(m.fixture_id), m])));
-  const filteredByFamily = applyFilters(familyWithContext.filter((o) => o.market_complete), { respectFamily: false });
+  const filteredByFamily = applyFilters(
+    familyWithContext.filter((o) => (o.model_prob !== null ? o.model_prob >= MIN_MODEL_PROBABILITY : o.odds !== null)),
+    { respectFamily: false },
+  );
   if (filteredByFamily.length) {
     return {
       rows: filteredByFamily.slice(0, 40),
-      notice: `No hay ${FAMILY_LABELS[family]} EV+; mostrando mercados de ${FAMILY_LABELS[family]} evaluados por el modelo.`,
+      notice: `Mostrando mercados ${FAMILY_LABELS[family]} disponibles en el payload.`,
     };
   }
 
@@ -553,11 +556,11 @@ function renderFromState() {
     emptyNotice: familyFilterActive ? "No hay oportunidades top para la familia seleccionada con los filtros activos." : null,
   });
   if (topSection.notice) notices.push(topSection.notice);
-  renderOpportunityList("top-opportunities", topSection.rows.slice(0, 50), "No hay oportunidades top para filtros activos.");
+  renderOpportunityList("top-opportunities", topSection.rows.slice(0, 50), "Hay mercados disponibles pero no cumplen filtros de valor");
 
-  const strictFuture = strict.filter((o) => o.flags.ev_plus && isFuture(o.hora));
-  const baseFuture = base.filter((o) => o.flags.ev_plus && isFuture(o.hora));
-  const relaxedFuture = relaxed.filter((o) => o.flags.ev_plus && isFuture(o.hora));
+  const strictFuture = strict.filter((o) => (o.model_prob ?? 0) >= MIN_MODEL_PROBABILITY && isFuture(o.hora));
+  const baseFuture = base.filter((o) => (o.model_prob ?? 0) >= MIN_MODEL_PROBABILITY && isFuture(o.hora));
+  const relaxedFuture = relaxed.filter((o) => (o.model_prob ?? 0) >= MIN_MODEL_PROBABILITY && isFuture(o.hora));
   const futureSection = selectSectionWithFallback(
     strictFuture,
     familyFilterActive ? [] : baseFuture,
@@ -567,7 +570,7 @@ function renderFromState() {
     emptyNotice: familyFilterActive ? "No hay EV+ próximos para la familia seleccionada con los filtros activos." : null,
   });
   if (futureSection.notice) notices.push(futureSection.notice);
-  renderOpportunityList("future-opportunities", futureSection.rows.slice(0, 50), "No hay EV+ próximos.");
+  renderOpportunityList("future-opportunities", futureSection.rows.slice(0, 50), "Hay mercados disponibles pero no cumplen filtros de valor");
 
   const strictSecondary = strict.filter((o) => o.flags.secondary_market || o.family === "Secondary");
   const baseSecondary = base.filter((o) => o.flags.secondary_market || o.family === "Secondary");
@@ -588,8 +591,8 @@ function renderFromState() {
     ["Double chance", "family-double-chance", "family-double-chance-incomplete", "Sin double chance para filtros activos."],
     ["Goals", "family-goals", "family-goals-incomplete", "Sin goals para filtros activos."],
     ["BTTS", "family-btts", "family-btts-incomplete", "Sin BTTS para filtros activos."],
-    ["Corners", "family-corners", "family-corners-incomplete", "Sin corners para filtros activos."],
-    ["Cards", "family-cards", "family-cards-incomplete", "Sin cards para filtros activos."],
+    ["Corners", "family-corners", "family-corners-incomplete", "No hay oportunidades..."],
+    ["Cards", "family-cards", "family-cards-incomplete", "Hay mercados disponibles pero no cumplen filtros de valor"],
     ["Shots", "family-shots", "family-shots-incomplete", "Sin shots para filtros activos."],
     ["Shots on target", "family-shots-on-target", "family-shots-on-target-incomplete", "Sin shots on target para filtros activos."],
     ["Fouls", "family-fouls", "family-fouls-incomplete", "Sin fouls para filtros activos."],
@@ -600,7 +603,11 @@ function renderFromState() {
   familySections.forEach(([family, target, incompleteTarget, empty]) => {
     const result = getFamilyDataset(family, strict, base);
     if (result.notice && (!state.filters.family || state.filters.family === family)) notices.push(result.notice);
-    renderOpportunityList(target, result.rows, empty);
+    const finalEmpty =
+      family === "Corners"
+        ? ((state.byFamily.corners || []).length ? "Hay mercados disponibles pero no cumplen filtros de valor" : "No hay oportunidades...")
+        : empty;
+    renderOpportunityList(target, result.rows, finalEmpty);
 
     const incomplete = getIncompleteFamilyDataset(family);
     if (incomplete.notice && (!state.filters.family || state.filters.family === family)) notices.push(incomplete.notice);
@@ -664,7 +671,7 @@ async function refreshDashboard() {
     state.opportunities = unified.complete;
     state.incompleteOpportunities = unified.incomplete;
     state.matchRadar = filteredPayload.match_radar;
-    state.byFamily = payload.top_by_family || {};
+    state.byFamily = payload.families || {};
     state.countryTree = payload.paises || [];
     state.summary = computeSummary(payload);
     populateSelectors();
