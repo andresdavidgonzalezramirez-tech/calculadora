@@ -78,12 +78,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-STATIC_DIR = Path(__file__).resolve().parent / "static"
-if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-    frontend_base_path = get_frontend_base_path()
-    if frontend_base_path:
-        app.mount(f"{frontend_base_path}/static", StaticFiles(directory=str(STATIC_DIR)), name="static-prefixed")
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+logger.info("Static directory exists: %s", os.path.exists(STATIC_DIR))
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+frontend_base_path = get_frontend_base_path()
+if frontend_base_path:
+    app.mount(f"{frontend_base_path}/static", StaticFiles(directory=STATIC_DIR), name="static-prefixed")
 
 
 MARKET_FAMILY_RULES = [
@@ -1235,10 +1236,11 @@ def _validation_error_response(exc: ValidationError, message: str) -> JSONRespon
 
 @app.get("/")
 def root():
-    if STATIC_DIR.joinpath("index.html").exists():
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_path):
         frontend_base_path = get_frontend_base_path()
         static_prefix = f"{frontend_base_path}/static" if frontend_base_path else "/static"
-        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        html = Path(index_path).read_text(encoding="utf-8")
         html = html.replace("__FRONTEND_BASE_PATH__", frontend_base_path)
         html = html.replace("__STATIC_STYLES_URL__", f"{static_prefix}/styles.css")
         html = html.replace("__STATIC_APP_URL__", f"{static_prefix}/app.js")
@@ -1307,6 +1309,14 @@ def health(db: Session = Depends(get_db)):
         "oddsSnapshots": int(db.scalar(select(func.count()).select_from(OddsSnapshot)) or 0),
         "teamStatsCache": int(db.scalar(select(func.count()).select_from(TeamStatsCache)) or 0),
         "pricingAlerts": int(db.scalar(select(func.count()).select_from(PricingAlert)) or 0),
+    }
+
+
+@app.get("/debug/static")
+def debug_static():
+    return {
+        "static_dir_exists": os.path.exists(STATIC_DIR),
+        "files": os.listdir(STATIC_DIR) if os.path.exists(STATIC_DIR) else [],
     }
 
 

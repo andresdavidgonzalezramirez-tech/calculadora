@@ -604,3 +604,9 @@ def test_recommended_requires_ready_and_calibrated_on_dashboard():
     assert indexed["OVER25"]["is_recommended_pick"] is True
     assert indexed["EXACT_SCORE_1_0"]["is_recommended_pick"] is False
     assert indexed["EXACT_SCORE_1_0"]["calibration_status"] == "missing"
+
+
+def test_static_files():
+    client = TestClient(main.app)
+    assert client.get("/static/styles.css").status_code == 200
+    assert client.get("/static/app.js").status_code == 200
