@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_HOST="${APP_HOST:-0.0.0.0}"
-APP_PORT="${APP_PORT:-8000}"
+APP_PORT="${PORT:-${APP_PORT:-8000}}"
 DB_WAIT_TIMEOUT="${DB_WAIT_TIMEOUT:-45}"
 APP_MODULE="${APP_MODULE:-main:app}"
 

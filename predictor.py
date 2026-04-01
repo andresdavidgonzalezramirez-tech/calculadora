@@ -1,13 +1,18 @@
 
 import math
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
+
+from betting_math import btts_from_poisson, expected_value, implied_probability, kelly_fraction
+from calibration import load_calibrator
+from settings import CALIBRATION_CONFIG, DECISION_THRESHOLDS, RISK_CONFIG
 
 MAX_GOALS = 10
 MAX_EVENTS = 40
 EPSILON = 1e-9
-MIN_SIGNAL_DELTA = 0.02
-MIN_RENDER_PROBABILITY = 0.20
+MIN_SIGNAL_DELTA = DECISION_THRESHOLDS.min_signal_delta
+MIN_RENDER_PROBABILITY = DECISION_THRESHOLDS.min_model_probability
 INTEGRITY_HIGH_ODD_THRESHOLD = 2.6
 INTEGRITY_HIGH_MODEL_PROB_THRESHOLD = 0.62
 INTEGRITY_SUSPICIOUS_EDGE_FLOOR = 0.10
@@ -81,7 +86,21 @@ PROBABILITY_FLOORS = {
     "high": MIN_RENDER_PROBABILITY,
     "medium": MIN_RENDER_PROBABILITY,
 }
-MAX_ACCEPTABLE_VOLATILITY = 0.55
+MAX_ACCEPTABLE_VOLATILITY = DECISION_THRESHOLDS.max_market_volatility
+
+
+_CALIBRATOR = None
+if CALIBRATION_CONFIG.method in {"platt", "isotonic"} and os.path.exists(CALIBRATION_CONFIG.artifact_path):
+    _CALIBRATOR = load_calibrator(CALIBRATION_CONFIG.artifact_path)
+
+
+def _apply_calibration(prob: float) -> float:
+    if _CALIBRATOR is None:
+        return prob
+    try:
+        return _clamp(float(_CALIBRATOR.predict(prob)), 0.01, 0.99)
+    except Exception:
+        return prob
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -1188,21 +1207,19 @@ def _pricing_flags(model_prob: float, fair_market_prob: Optional[float], odd: Op
         "posible_error_cuota": suspicious_gap or high_odd,
         "cuota_sospechosa": suspicious_gap or high_odd or depressed_price,
         "oportunidad_detectada": edge >= soft_threshold or suspicious_gap or high_odd,
-        "probabilidad_implicita": 1.0 / odd,
+        "probabilidad_implicita": implied_probability(odd),
         "probabilidad_justa": fair_market_prob,
     }
 
 
 def _kelly_stake_units(model_prob: Optional[float], odd: Optional[float], ev: Optional[float], market_complete: bool) -> Optional[float]:
-    if model_prob is None or odd is None or odd <= 1.0 or ev is None or ev <= 0.0 or not market_complete:
+    if model_prob is None or odd is None or ev is None or ev <= 0.0 or not market_complete:
         return None
-    b = odd - 1.0
-    q = 1.0 - model_prob
-    raw_fraction = ((b * model_prob) - q) / b if b > 0 else 0.0
-    if raw_fraction <= 0:
+    raw_fraction = kelly_fraction(model_prob, odd)
+    if raw_fraction is None or raw_fraction <= 0:
         return None
-    conservative_fraction = raw_fraction * 0.25
-    return round(_clamp(conservative_fraction, 0.0, 0.05), 4)
+    conservative_fraction = raw_fraction * RISK_CONFIG.kelly_fraction
+    return round(_clamp(conservative_fraction, 0.0, RISK_CONFIG.max_stake_units), 4)
 
 
 def _build_market(
@@ -1224,8 +1241,9 @@ def _build_market(
     volatility = _market_volatility(code)
     stability = 1.0 - volatility
     pricing = _pricing_flags(prob, market_prob, odd, code)
+    prob = _apply_calibration(prob)
     implied = pricing.get("probabilidad_implicita")
-    ev = (prob * odd - 1.0) if odd is not None else None
+    ev = expected_value(prob, odd) if odd is not None else None
     edge_price = (prob - implied) if implied is not None else None
     is_valid_signal = bool(edge_price is not None and abs(edge_price) >= MIN_SIGNAL_DELTA)
     signal_degenerate = bool(edge_price is not None and abs(edge_price) < MIN_SIGNAL_DELTA)
@@ -1722,7 +1740,8 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
     gol_local = _calibrated_binary_prob(team_to_score_prob(lambda_home), structural_quality, floor=0.10, ceiling=0.90)
     gol_visitante = _calibrated_binary_prob(team_to_score_prob(lambda_away), structural_quality, floor=0.10, ceiling=0.88)
 
-    btts = _clamp(outcomes["btts"] * 0.76 + (gol_local * gol_visitante) * 0.24, 0.09, 0.84)
+    btts_poisson = btts_from_poisson(lambda_home, lambda_away)
+    btts = _clamp(outcomes["btts"] * 0.60 + btts_poisson * 0.25 + (gol_local * gol_visitante) * 0.15, 0.09, 0.84)
     over15 = _clamp(outcomes["over15"], 0.14, 0.92)
     over25 = _clamp(outcomes["over25"], 0.10, 0.84)
     over35 = _clamp(outcomes["over35"], 0.07, 0.72)

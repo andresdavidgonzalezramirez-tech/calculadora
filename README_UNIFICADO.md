@@ -1,29 +1,42 @@
 # App unificada Bankenban + Panel
 
-Esta aplicación despliega **una sola instancia FastAPI** que integra:
+Aplicación FastAPI para predicción probabilística de fútbol, cálculo EV+, filtrado de picks y panel web integrado.
 
-- Motor Bankenban (`predictor.py`) para cálculo y scoring de mercados.
-- API (`main.py`) para ingesta, predicción, alertas y resumen.
-- Panel frontend estático (`static/index.html`, `static/app.js`, `static/styles.css`) servido por la misma app.
-
-## Integración real de punta a punta
-
-- `GET /` entrega el panel HTML (`static/index.html`).
-- `GET /static/*` sirve los assets del panel (JS/CSS).
-- El panel consume `GET /panel/dashboard` para cargar partidos, oportunidades EV+, radar de partido, familias y resumen.
-- El endpoint `/panel/dashboard` se alimenta de `predictions.market_breakdown` y `predictions.apuestas_fuertes`, generados por el motor Bankenban durante `/ingest/run` o `/predict`.
-
-## Estructura
-
-- `main.py`, `predictor.py`, `db.py`: backend + motor Bankenban
-- `static/`: panel integrado
-- `Dockerfile`, `docker-compose.yml`: despliegue conjunto backend + panel
+## Stack
+- FastAPI + Uvicorn
+- SQLAlchemy (PostgreSQL/SQLite)
+- Motor probabilístico en `predictor.py`
+- Frontend estático en `static/`
 
 ## Ejecución local
-
 ```bash
+cp .env.example .env
 export DATABASE_URL="sqlite:///./dev.db"
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Abre `http://localhost:8000/` para el panel.
+## Docker / EasyPanel
+- Usa `Dockerfile` y `docker/entrypoint.sh`.
+- La app respeta `PORT` (EasyPanel) y también `APP_PORT`.
+- Health endpoint: `GET /health`.
+- Variables críticas: `DATABASE_URL`.
+
+### Build y run
+```bash
+docker build -t calculadora .
+docker run --rm -p 8000:8000 --env-file .env calculadora
+```
+
+## Configuración productiva relevante
+- Thresholds y riesgo en `settings.py` vía env:
+  - `MIN_MODEL_PROBABILITY`, `MIN_EV`, `MIN_CONFIDENCE`
+  - `KELLY_FRACTION`, `MAX_STAKE_UNITS`
+- Calibración:
+  - `CALIBRATION_METHOD` = `builtin|platt|isotonic`
+  - `CALIBRATOR_PATH` con artefacto JSON serializado.
+
+## Módulos nuevos
+- `betting_math.py`: fórmulas EV, Kelly, implícita, BTTS Poisson y OU por Poisson total.
+- `calibration.py`: Platt/Isotonic + Brier/LogLoss/Reliability.
+- `risk.py`: evaluación de picks y stake conservador.
+- `backtesting.py`: evaluación histórica y grid search de thresholds.
