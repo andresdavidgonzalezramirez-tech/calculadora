@@ -23,6 +23,12 @@ const state = {
   countryTree: [],
   summary: {},
   filters: structuredClone(INITIAL_FILTERS),
+  ui: {
+    validOnly: true,
+    hideTraceability: true,
+    hideEmptyFixtures: true,
+    includeSecondaryWhenValidOnly: true,
+  },
 };
 
 const KPI_CONFIG = [
@@ -235,6 +241,7 @@ function normalizeOpportunity(raw) {
       strong_signal: Boolean(flags.strong_signal),
       secondary_market: Boolean(flags.secondary_market ?? ["Corners", "Cards", "Shots", "Secondary"].includes(family)),
     },
+    pick_status: raw.pick_status || (raw.publish_allowed ? "publishable_core" : "traceable_only"),
   };
   normalized.market_complete = isCompleteOpportunity(normalized);
   normalized.market_level = raw.market_level || classifyMarketLevel(normalized);
@@ -300,6 +307,12 @@ function renderOpportunityList(containerId, opportunities, emptyText) {
   const container = q(containerId);
   container.innerHTML = "";
   const safeRows = opportunities.filter((o) => {
+    if (state.ui.validOnly) {
+      const allowed = state.ui.includeSecondaryWhenValidOnly
+        ? new Set(["publishable_core", "publishable_secondary"])
+        : new Set(["publishable_core"]);
+      return allowed.has(String(o.pick_status || ""));
+    }
     return o.visibility_allowed === true && o.publish_allowed === true;
   });
   if (!safeRows.length) return;
@@ -418,20 +431,23 @@ function renderMatchRadar(radarRows) {
     card.className = "match-card";
     const included = (row.oportunidades_incluidas || []).map(normalizeOpportunity).filter((o) => o.publishable || o.odds !== null);
     const excluded = (row.oportunidades_excluidas || []).map(normalizeOpportunity).filter((o) => o.publishable || o.odds !== null);
+    if (state.ui.hideEmptyFixtures && !included.length) return;
     card.innerHTML = `<div class="match-head"><strong>${row.equipos?.local || "Local"} vs ${row.equipos?.visitante || "Visitante"}</strong><span>${row.liga || "N/D"} · ${row.pais || "N/D"}</span><span>${dateLabel(row.hora)} · ${countdownLabel(row.hora, row.fixture_status_current || row.estado)}</span><span>Familias: ${(row.familias_detectadas || []).join(", ") || "N/D"}</span></div>`;
 
-    const details = document.createElement("details");
-    details.innerHTML = `<summary>Trazabilidad: incluidos, descartes y telemetría</summary>`;
-    const grid = document.createElement("div");
-    grid.className = "match-opportunities";
-    included.forEach((o) => grid.appendChild(createOpportunityCard(o)));
-    excluded.forEach((o) => grid.appendChild(createOpportunityCard(o)));
-    if (!included.length && !excluded.length) grid.innerHTML = '<p class="empty">Sin mercados evaluados.</p>';
-    const trace = document.createElement("pre");
-    trace.className = "trace-pre";
-    trace.textContent = JSON.stringify(row, null, 2);
-    details.append(grid, trace);
-    card.appendChild(details);
+    if (!state.ui.hideTraceability) {
+      const details = document.createElement("details");
+      details.innerHTML = `<summary>Trazabilidad: incluidos, descartes y telemetría</summary>`;
+      const grid = document.createElement("div");
+      grid.className = "match-opportunities";
+      included.forEach((o) => grid.appendChild(createOpportunityCard(o)));
+      excluded.forEach((o) => grid.appendChild(createOpportunityCard(o)));
+      if (!included.length && !excluded.length) grid.innerHTML = '<p class="empty">Sin mercados evaluados.</p>';
+      const trace = document.createElement("pre");
+      trace.className = "trace-pre";
+      trace.textContent = JSON.stringify(row, null, 2);
+      details.append(grid, trace);
+      card.appendChild(details);
+    }
     container.appendChild(card);
   });
 }
@@ -549,6 +565,22 @@ function bindFilters() {
   });
 
   q("refresh-btn").addEventListener("click", refreshDashboard);
+  q("toggle-valid-only")?.addEventListener("click", () => {
+    state.ui.validOnly = !state.ui.validOnly;
+    renderFromState();
+  });
+  q("toggle-hide-trace")?.addEventListener("click", () => {
+    state.ui.hideTraceability = !state.ui.hideTraceability;
+    renderFromState();
+  });
+  q("toggle-hide-empty-fixtures")?.addEventListener("click", () => {
+    state.ui.hideEmptyFixtures = !state.ui.hideEmptyFixtures;
+    renderFromState();
+  });
+  q("cleanup-old-records")?.addEventListener("click", async () => {
+    await fetch("/panel/cleanup-old-records", { method: "POST" });
+    await refreshDashboard();
+  });
 }
 
 function populateFamilySelector() {

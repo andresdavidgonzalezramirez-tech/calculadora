@@ -61,6 +61,7 @@ def test_predict_accepts_valid_payload(monkeypatch):
     assert response.status_code == 200
     assert response.json()["fixtures_total"] == 1
     assert captured["payload"].fixtures[0].fixture_id == 1001
+    assert "classification" in response.json()
 
 
 
@@ -124,6 +125,32 @@ def test_predict_invalid_numeric_type_returns_422(monkeypatch):
     payload = response.json()
     assert payload["error"]["message"] == "Payload inválido para /predict"
     assert any(item["field"] == "fixtures.0.cf_home" for item in payload["error"]["invalid_fields"])
+
+
+def test_predict_classifies_publishable_core(monkeypatch):
+    client, _ = _client_with_ingest_stub(monkeypatch)
+    fixture = base_fixture()
+    fixture["candidate_picks"] = [
+        {
+            "market_key": "OVER25",
+            "market": "Goals",
+            "pick": "Over 2.5",
+            "odds": 1.90,
+            "calibrated_prob": 0.62,
+            "market_complete": True,
+            "readiness": "ready",
+            "anomaly_flag": False,
+            "secondary_market": False,
+            "family": "Goals",
+        }
+    ]
+
+    response = client.post("/predict", json={"fixtures": [fixture]})
+    assert response.status_code == 200
+    payload = response.json()
+    classified = payload["classification"]["fixtures"][0]
+    assert len(classified["publishable_core"]) == 1
+    assert classified["publishable_core"][0]["pick_status"] == "publishable_core"
 
 
 def _seed_prediction_with_status(
