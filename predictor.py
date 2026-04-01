@@ -1369,6 +1369,29 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
 
     odds = extract_odds(f)
     dynamic_over_markets = odds.get("dynamic_over_markets") if isinstance(odds.get("dynamic_over_markets"), list) else []
+    input_corners_odds_available = any(
+        odds.get(key) is not None
+        for key in [
+            "over75_corners",
+            "over85_corners",
+            "over95_corners",
+            "corners_home_over_3_5",
+            "corners_home_over_4_5",
+            "corners_away_over_3_5",
+            "corners_away_over_4_5",
+        ]
+    ) or any(str(item.get("family", "")).lower() == "corners" for item in dynamic_over_markets)
+    input_cards_odds_available = any(
+        odds.get(key) is not None
+        for key in [
+            "over35_cards",
+            "over45_cards",
+            "cards_home_over_1_5",
+            "cards_home_over_2_5",
+            "cards_away_over_1_5",
+            "cards_away_over_2_5",
+        ]
+    ) or any(str(item.get("family", "")).lower() == "cards" for item in dynamic_over_markets)
     collection_meta = f.get("collection_meta") if isinstance(f.get("collection_meta"), dict) else {}
     feature_availability = {}
     if isinstance(collection_meta.get("feature_availability"), dict):
@@ -1737,6 +1760,53 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
             )
         )
 
+    families_payload: Dict[str, List[Dict[str, Any]]] = {}
+    if input_corners_odds_available:
+        families_payload.setdefault("corners", [])
+    if input_cards_odds_available:
+        families_payload.setdefault("cards", [])
+
+    for item in dynamic_over_markets:
+        dynamic_family = str(item.get("family") or "").lower()
+        if dynamic_family not in {"corners", "cards"}:
+            continue
+        families_payload.setdefault(dynamic_family, []).append(
+            {
+                "code": item.get("source_key"),
+                "market": dynamic_family.capitalize(),
+                "pick": f"{dynamic_family} over {item.get('line')}",
+                "line": round(float(item["line"]), 2) if item.get("line") is not None else None,
+                "prob": None,
+                "odds": round(item.get("odd"), 4) if item.get("odd") else None,
+            }
+        )
+
+    for item in markets:
+        token = f"{item.get('code') or ''} {item.get('mercado') or ''} {item.get('jugada') or ''}".upper()
+        family_key = "secondary"
+        if "CORNER" in token:
+            family_key = "corners"
+        elif "CARD" in token or "TARJET" in token:
+            family_key = "cards"
+        elif "SHOT" in token or "TIRO" in token:
+            family_key = "shots"
+        elif "BTTS" in token or "AMBOS" in token:
+            family_key = "btts"
+        elif "1X2" in token:
+            family_key = "1x2"
+        elif any(key in token for key in ["GOAL", "GOLES", "SCORE", "OVER", "UNDER"]):
+            family_key = "goals"
+        families_payload.setdefault(family_key, []).append(
+            {
+                "code": item.get("code"),
+                "market": item.get("mercado"),
+                "pick": item.get("jugada"),
+                "line": round(item["line"], 2) if item.get("line") is not None else None,
+                "prob": round(item.get("prob", 0.0), 6) if item.get("prob") is not None else None,
+                "odds": round(item.get("cuota"), 4) if item.get("cuota") else None,
+            }
+        )
+
     best = _select_primary_bet(markets)
     apuestas_fuertes = _strong_bets(markets)
     signal_count = len(apuestas_fuertes)
@@ -1849,4 +1919,7 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         "shots_total_ready": shots_total_ready,
         "shots_on_target_ready": shots_on_target_ready,
         "market_blocking_reasons": market_blocking_reasons,
+        "families": families_payload,
+        "corners_odds_available": bool(input_corners_odds_available),
+        "cards_odds_available": bool(input_cards_odds_available),
     }
