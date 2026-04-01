@@ -49,7 +49,7 @@ const FAMILY_LABELS = {
   "Double chance": "Double chance",
   "Secondary": "Secondary",
 };
-const MIN_MODEL_PROBABILITY = 0.6;
+const MIN_MODEL_PROBABILITY = 0.5;
 const SCHEDULED_FIXTURE_STATUSES = new Set(["NS"]);
 const DISPLAY_TIMEZONE = "Europe/Warsaw";
 
@@ -170,7 +170,7 @@ function normalizeOpportunity(raw) {
   normalized.market_complete = isCompleteOpportunity(normalized);
   normalized.publishable = normalized.market_complete && normalized.model_prob !== null && normalized.model_prob >= MIN_MODEL_PROBABILITY;
   if (!normalized.publishable && normalized.model_prob !== null && normalized.model_prob < MIN_MODEL_PROBABILITY) {
-    normalized.reason_discard = normalized.reason_discard || "below_min_model_probability_60";
+    normalized.reason_discard = normalized.reason_discard || "below_min_model_probability_50";
   }
   return normalized;
 }
@@ -369,6 +369,23 @@ function flattenTelemetry(payload) {
   return rows;
 }
 
+function flattenFamilies(payload) {
+  const families = payload.families || {};
+  const rows = [];
+  Object.entries(families).forEach(([family, items]) => {
+    (items || []).forEach((row) => {
+      rows.push(normalizeOpportunity({
+        ...row,
+        family: row.family || family,
+        market: row.market || row.mercado || row.code || family,
+        pick: row.pick || row.jugada || "N/D",
+        source: row.source || "families",
+      }));
+    });
+  });
+  return rows;
+}
+
 function withFixtureContext(opps, matchMap) {
   return opps.map((opp) => {
     if (opp.partido && opp.pais && opp.liga) return opp;
@@ -407,6 +424,7 @@ function buildUnifiedOpportunities(payload) {
     ...(payload.oportunidades_ev || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "oportunidades_ev" })),
     ...(payload.top_opportunities || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "top_opportunities" })),
     ...flattenTelemetry(payload),
+    ...flattenFamilies(payload),
     ...((payload.apuestas_fuertes || []).map((s) => normalizeOpportunity({
       code: s.code || s.mercado_codigo || s.mercado || "SIGNAL",
       market: s.mercado || "Apuesta fuerte",

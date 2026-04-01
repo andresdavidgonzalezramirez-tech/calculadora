@@ -76,7 +76,7 @@ MARKET_FAMILY_RULES = [
     ("Goals", ("OVER", "UNDER", "TEAM_", "GOALS", "SCORE")),
 ]
 SECONDARY_FAMILIES = {"Corners", "Cards", "Shots", "Secondary"}
-MIN_MODEL_PROBABILITY = float(os.getenv("MIN_MODEL_PROBABILITY", "0.60"))
+MIN_MODEL_PROBABILITY = float(os.getenv("MIN_MODEL_PROBABILITY", "0.50"))
 
 VISIBLE_FIXTURE_STATUSES = {"NS"}
 HIDDEN_FIXTURE_STATUSES = {"1H", "HT", "2H", "LIVE", "FT", "AET", "PEN", "CANC", "ABD", "PST"}
@@ -302,6 +302,11 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
         for family, items in top_by_family.items()
     }
 
+    families_payload: Dict[str, List[Dict[str, Any]]] = {}
+    for item in all_opportunities:
+        family = str(item.get("family") or "Secondary")
+        families_payload.setdefault(family.lower(), []).append(item)
+
     summary = {
         "total_paises": len(paises),
         "total_ligas": len({(row.liga_id, row.liga) for row in rows_sorted}),
@@ -324,6 +329,15 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
         "paises": paises,
         "match_radar": match_radar[:limit],
         "summary": summary,
+        "families": families_payload,
+        "corners_odds_available": bool(
+            families_payload.get("corners")
+            and any(entry.get("odds") is not None for entry in families_payload.get("corners", []))
+        ),
+        "cards_odds_available": bool(
+            families_payload.get("cards")
+            and any(entry.get("odds") is not None for entry in families_payload.get("cards", []))
+        ),
         "filters": {
             "min_model_probability": MIN_MODEL_PROBABILITY,
         },

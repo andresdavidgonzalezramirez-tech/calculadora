@@ -258,11 +258,16 @@ def test_panel_dashboard_only_ns_future_and_multiple_markets(monkeypatch):
     visible_codes = {(opp["fixture_id"], opp["code"]) for opp in payload["top_opportunities"]}
     assert (2001, "O85_CORNERS") in visible_codes
     assert (2001, "OVER25") in visible_codes
-    assert (2001, "O35_CARDS") not in visible_codes
-    assert (2001, "SHOTS_HOME") not in visible_codes
-    assert (2001, "SOT_AWAY") not in visible_codes
+    assert (2001, "O35_CARDS") in visible_codes
+    assert (2001, "SHOTS_HOME") in visible_codes
+    assert (2001, "SOT_AWAY") in visible_codes
 
-    assert all((opp.get("model_prob") or 0) >= 0.60 for opp in payload["top_opportunities"])
+    assert all((opp.get("model_prob") or 0) >= 0.50 for opp in payload["top_opportunities"])
+    assert payload["filters"]["min_model_probability"] == 0.5
+    assert payload["corners_odds_available"] is True
+    assert payload["cards_odds_available"] is True
+    assert payload["families"]["corners"]
+    assert payload["families"]["cards"]
 
     total_leagues = payload["summary"]["total_ligas"]
     assert total_leagues >= 2
@@ -375,3 +380,26 @@ def test_extract_odds_reads_market_catalog_for_advanced_markets():
     assert odds["over35_cards"] == 1.79
     assert odds["corners_home_over_3_5"] == 1.66
     assert odds["cards_away_over_1_5"] == 1.72
+
+
+def test_calcular_partido_exposes_corners_cards_families_when_input_contains_markets():
+    fixture = base_fixture()
+    fixture.update(
+        {
+            "gf_home": 1.4,
+            "ga_home": 1.1,
+            "gf_away": 1.2,
+            "ga_away": 1.3,
+            "odds": {
+                "totals": {
+                    "corners": {"8.5": 1.96},
+                    "cards": {"3.5": 1.84},
+                }
+            },
+        }
+    )
+    result = predictor.calcular_partido(fixture)
+    assert result["corners_odds_available"] is True
+    assert result["cards_odds_available"] is True
+    assert result["families"]["corners"]
+    assert result["families"]["cards"]
