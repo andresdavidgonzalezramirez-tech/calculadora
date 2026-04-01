@@ -802,6 +802,95 @@ def _extract_dynamic_over_markets(flat: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def _infer_family_from_token(token: str) -> str:
+    upper = token.upper()
+    if any(k in upper for k in ["DOUBLE CHANCE", "DOBLE OPORTUNIDAD", " DC_", "DC_"]):
+        return "double_chance"
+    if any(k in upper for k in ["EXACT SCORE", "MARCADOR EXACTO", "CORRECT SCORE"]):
+        return "exact_score"
+    if any(k in upper for k in ["CORNER", "ESQUINA"]):
+        return "corners"
+    if any(k in upper for k in ["CARD", "TARJET", "BOOKING", "YELLOW", "AMARILLA", "AMONEST"]):
+        return "cards"
+    if any(k in upper for k in ["FOUL", "FALTA"]):
+        return "fouls"
+    if any(k in upper for k in ["OFFSIDE", "FUERA DE JUEGO"]):
+        return "offsides"
+    if any(k in upper for k in ["SHOTONGOAL", "SHOTS ON TARGET", "SOT", "TIROS A PUERTA"]):
+        return "shots_on_target"
+    if any(k in upper for k in ["SHOT", "TIRO", "REMATE"]):
+        return "shots"
+    if any(k in upper for k in ["BTTS", "BOTH TEAMS TO SCORE", "AMBOS"]):
+        return "btts"
+    if any(k in upper for k in ["1X2", "MATCH WINNER", "MATCH_WINNER"]):
+        return "1x2"
+    if any(k in upper for k in ["GOAL", "GOLES", "ASIAN", "HANDICAP", "OVER", "UNDER", "TOTAL"]):
+        return "goals"
+    return "secondary"
+
+
+def _extract_detected_markets(fixture: Dict[str, Any]) -> List[Dict[str, Any]]:
+    detected: List[Dict[str, Any]] = []
+    families = fixture.get("families")
+    if isinstance(families, dict):
+        for family_name, items in families.items():
+            if not isinstance(items, list):
+                continue
+            for idx, item in enumerate(items):
+                if not isinstance(item, dict):
+                    continue
+                odd = _safe_float(item.get("odds", item.get("odd", item.get("cuota"))), 0.0)
+                if odd <= 1.0:
+                    continue
+                market_name = str(item.get("market") or item.get("mercado") or family_name).strip() or family_name
+                pick = str(item.get("pick") or item.get("jugada") or item.get("selection") or "Mercado detectado").strip()
+                code = str(item.get("code") or f"DETECTED_{str(family_name).upper()}_{idx + 1}")
+                family_key = _infer_family_from_token(f"{family_name} {market_name} {pick} {code}")
+                implied = implied_prob(odd)
+                detected.append(
+                    {
+                        "code": code,
+                        "mercado": market_name,
+                        "jugada": pick,
+                        "family_key": family_key,
+                        "cuota": odd,
+                        "probabilidad_implicita": implied,
+                        "prob": _round_prob(implied) if implied is not None else None,
+                        "line": _parse_avg_number(item.get("line")),
+                    }
+                )
+
+    catalog = fixture.get("market_catalog")
+    if isinstance(catalog, list):
+        for idx, item in enumerate(catalog):
+            if not isinstance(item, dict):
+                continue
+            odd = _safe_float(item.get("odd", item.get("odds", item.get("price"))), 0.0)
+            if odd <= 1.0:
+                continue
+            code = str(item.get("code") or item.get("key") or item.get("market_code") or f"CATALOG_{idx + 1}")
+            family_name = str(item.get("family") or item.get("group") or item.get("market_family") or "secondary")
+            scope = str(item.get("scope") or item.get("team_scope") or item.get("period") or "")
+            line = _parse_avg_number(item.get("line") or item.get("threshold") or item.get("total"))
+            market_name = str(item.get("market") or item.get("name") or family_name).strip() or family_name
+            pick = str(item.get("pick") or item.get("selection") or f"{scope} {line if line is not None else ''}").strip() or "Mercado detectado"
+            family_key = _infer_family_from_token(f"{family_name} {market_name} {pick} {scope} {code}")
+            implied = implied_prob(odd)
+            detected.append(
+                {
+                    "code": code,
+                    "mercado": market_name,
+                    "jugada": pick,
+                    "family_key": family_key,
+                    "cuota": odd,
+                    "probabilidad_implicita": implied,
+                    "prob": _round_prob(implied) if implied is not None else None,
+                    "line": line,
+                }
+            )
+    return detected
+
+
 def extract_odds(fixture: Dict[str, Any]) -> Dict[str, Optional[float]]:
     sources = []
     flat: Dict[str, Any] = {}
@@ -1764,13 +1853,7 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 base_lambda = offsides_totales
 
-        if base_lambda is None or base_lambda <= 0:
-            continue
-
         period_factor = 0.46 if period == "1H" else 0.54 if period == "2H" else 1.0
-        event_lambda = _clamp(base_lambda * period_factor, 0.05, 55.0)
-        prob_over = _round_prob(prob_over_lambda(event_lambda, line))
-        prob = prob_over if direction == "over" else _round_prob(1.0 - prob_over)
         family_token = family.upper()
         dir_token = "OVER" if direction == "over" else "UNDER"
         code = f"{family_token}_{scope.upper()}_{dir_token}_{str(line).replace('.', '_')}_{period}"
@@ -1780,6 +1863,42 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
             pick = f"{group} total {dir_label} {line:.1f} ({period_label})"
         else:
             pick = f"{team_label} {dir_label} {line:.1f} {group.lower()} ({period_label})"
+
+        if base_lambda is None or base_lambda <= 0:
+            implied = implied_prob(odd)
+            markets.append(
+                {
+                    "code": code,
+                    "mercado": group,
+                    "jugada": pick,
+                    "prob": _round_prob(implied) if implied is not None else MIN_MODEL_PROBABILITY,
+                    "cuota": odd,
+                    "edge": 0.0,
+                    "es_value_bet": False,
+                    "soft_value": False,
+                    "posible_error_cuota": False,
+                    "cuota_sospechosa": False,
+                    "oportunidad_detectada": True,
+                    "probabilidad_implicita": implied,
+                    "probabilidad_justa": implied,
+                    "reliability": 0.46,
+                    "stability": 0.42,
+                    "data_quality": max(structural_quality, 0.30),
+                    "signal_tier": "detected",
+                    "score": 0.35,
+                    "close_probability": _round_prob(implied) if implied is not None else None,
+                    "volatility": 0.74,
+                    "fragility": 0.74,
+                    "line": line,
+                    "family_key": family,
+                    "detected_only": True,
+                }
+            )
+            continue
+
+        event_lambda = _clamp(base_lambda * period_factor, 0.05, 55.0)
+        prob_over = _round_prob(prob_over_lambda(event_lambda, line))
+        prob = prob_over if direction == "over" else _round_prob(1.0 - prob_over)
 
         markets.append(
             _build_market(
@@ -1797,6 +1916,45 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
             )
         )
 
+    detected_from_input = _extract_detected_markets(f)
+    existing_codes = {str(item.get("code") or "") for item in markets}
+    for detected in detected_from_input:
+        code = str(detected.get("code") or "")
+        if code in existing_codes:
+            continue
+        odd = detected.get("cuota")
+        implied = detected.get("probabilidad_implicita")
+        prob = detected.get("prob")
+        markets.append(
+            {
+                "code": code or f"DETECTED_{len(markets) + 1}",
+                "mercado": detected.get("mercado") or "Mercado detectado",
+                "jugada": detected.get("jugada") or "Mercado detectado sin pricing completo",
+                "prob": prob if prob is not None else MIN_MODEL_PROBABILITY,
+                "cuota": odd,
+                "edge": 0.0,
+                "es_value_bet": False,
+                "soft_value": False,
+                "posible_error_cuota": False,
+                "cuota_sospechosa": False,
+                "oportunidad_detectada": True,
+                "probabilidad_implicita": implied,
+                "probabilidad_justa": implied,
+                "reliability": 0.48,
+                "stability": 0.45,
+                "data_quality": max(structural_quality, 0.30),
+                "signal_tier": "detected",
+                "score": 0.40,
+                "close_probability": prob if prob is not None else implied,
+                "volatility": 0.72,
+                "fragility": 0.72,
+                "line": detected.get("line"),
+                "family_key": detected.get("family_key", "secondary"),
+                "detected_only": True,
+            }
+        )
+        existing_codes.add(code)
+
     families_payload: Dict[str, List[Dict[str, Any]]] = {}
     if input_corners_odds_available:
         families_payload.setdefault("corners", [])
@@ -1804,30 +1962,8 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         families_payload.setdefault("cards", [])
 
     for item in markets:
-        token = f"{item.get('code') or ''} {item.get('mercado') or ''} {item.get('jugada') or ''}".upper()
-        family_key = "secondary"
-        if "CORNER" in token or "ESQUINA" in token:
-            family_key = "corners"
-        elif any(k in token for k in ["CARD", "TARJET", "BOOKING", "YELLOW", "AMARILLA", "AMONEST"]):
-            family_key = "cards"
-        elif any(k in token for k in ["FOUL", "FALTA"]):
-            family_key = "fouls"
-        elif any(k in token for k in ["OFFSIDE", "FUERA DE JUEGO"]):
-            family_key = "offsides"
-        elif any(k in token for k in ["SHOTS ON TARGET", "SOT", "TIROS A PUERTA", "REMATES AL ARCO"]):
-            family_key = "shots_on_target"
-        elif "SHOT" in token or "TIRO" in token:
-            family_key = "shots"
-        elif any(k in token for k in ["DOUBLE CHANCE", "DOBLE OPORTUNIDAD", "DC_"]):
-            family_key = "double_chance"
-        elif any(k in token for k in ["EXACT SCORE", "MARCADOR EXACTO"]):
-            family_key = "exact_score"
-        elif "BTTS" in token or "AMBOS" in token:
-            family_key = "btts"
-        elif "1X2" in token:
-            family_key = "1x2"
-        elif any(key in token for key in ["GOAL", "GOLES", "SCORE", "OVER", "UNDER"]):
-            family_key = "goals"
+        token = f"{item.get('code') or ''} {item.get('mercado') or ''} {item.get('jugada') or ''}"
+        family_key = item.get("family_key") or _infer_family_from_token(token)
         families_payload.setdefault(family_key, []).append(
             {
                 "code": item.get("code"),
@@ -1836,6 +1972,8 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
                 "line": round(item["line"], 2) if item.get("line") is not None else None,
                 "prob": round(item.get("prob", 0.0), 6) if item.get("prob") is not None else None,
                 "odds": round(item.get("cuota"), 4) if item.get("cuota") else None,
+                "market_complete": not bool(item.get("detected_only")),
+                "probabilidad_implicita": round(item.get("probabilidad_implicita"), 6) if item.get("probabilidad_implicita") is not None else None,
             }
         )
 
@@ -1986,10 +2124,11 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
                 "probabilidad_implicita": round(item["probabilidad_implicita"], 6) if item.get("probabilidad_implicita") is not None else None,
                 "probabilidad_justa": round(item["probabilidad_justa"], 6) if item.get("probabilidad_justa") is not None else None,
                 "ev": round((item["cuota"] * item["prob"] - 1.0), 6) if item.get("cuota") else None,
-                "market_complete": bool(item.get("cuota") and item.get("probabilidad_implicita") is not None),
+                "market_complete": bool(item.get("cuota") and item.get("probabilidad_implicita") is not None and not item.get("detected_only")),
                 "close_probability": round(item.get("close_probability", item["prob"]), 6),
                 "volatility": round(item.get("volatility", 0.0), 4),
                 "fragility": round(item.get("fragility", 0.0), 4),
+                "detected_only": bool(item.get("detected_only")),
             }
             for item in markets
         ],

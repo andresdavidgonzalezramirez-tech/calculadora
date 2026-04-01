@@ -225,7 +225,10 @@ function renderOpportunityList(containerId, opportunities, emptyText) {
   const container = q(containerId);
   container.innerHTML = "";
   const safeRows = opportunities.filter((o) => {
-    if (o.model_prob !== null) return o.model_prob >= MIN_MODEL_PROBABILITY;
+    if (o.market_level === "top_opportunity") return true;
+    if (o.market_level === "mercado_util") return true;
+    if (o.market_level === "mercado_detectado") return o.odds !== null;
+    if (o.model_prob !== null) return o.model_prob >= MIN_MODEL_PROBABILITY || o.odds !== null;
     return o.odds !== null;
   });
   if (!safeRows.length) return (container.innerHTML = `<p class="empty">${emptyText}</p>`);
@@ -422,9 +425,13 @@ function dedupeOpportunities(opps) {
 
 function buildUnifiedOpportunities(payload) {
   const matchMap = new Map((payload.partidos || []).map((m) => [Number(m.fixture_id), m]));
+  const levels = payload.market_levels || {};
   const prioritized = [
     ...(payload.oportunidades_ev || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "oportunidades_ev" })),
     ...(payload.top_opportunities || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "top_opportunities" })),
+    ...((levels.top_opportunities || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "market_levels.top_opportunities", market_level: o.market_level || "top_opportunity" }))),
+    ...((levels.mercado_util || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "market_levels.mercado_util", market_level: o.market_level || "mercado_util" }))),
+    ...((levels.mercado_detectado || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "market_levels.mercado_detectado", market_level: o.market_level || "mercado_detectado" }))),
     ...flattenTelemetry(payload),
     ...flattenFamilies(payload),
     ...((payload.apuestas_fuertes || []).map((s) => normalizeOpportunity({
