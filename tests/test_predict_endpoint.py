@@ -194,6 +194,7 @@ def test_panel_dashboard_only_ns_future_and_multiple_markets(monkeypatch):
                 {"code": "O35_CARDS", "mercado": "Tarjetas", "jugada": "Over 3.5 tarjetas", "prob": 0.58, "cuota": 1.88, "probabilidad_implicita": 0.53, "edge": 0.05, "ev": 0.09, "market_complete": True},
                 {"code": "SHOTS_HOME", "mercado": "Shots", "jugada": "Home shots", "prob": 0.59, "cuota": 1.92, "probabilidad_implicita": 0.52, "edge": 0.07, "ev": 0.12, "market_complete": True},
                 {"code": "SOT_AWAY", "mercado": "Shots on target", "jugada": "Away SOT", "prob": 0.57, "cuota": 1.93, "probabilidad_implicita": 0.51, "edge": 0.06, "ev": 0.10, "market_complete": True},
+                {"code": "EXACT_SCORE_1_0", "mercado": "Exact score", "jugada": "1-0", "prob": None, "cuota": 7.5, "probabilidad_implicita": None, "edge": None, "ev": None, "market_complete": False},
             ],
         )
         _seed_prediction_with_status(
@@ -269,6 +270,8 @@ def test_panel_dashboard_only_ns_future_and_multiple_markets(monkeypatch):
     assert payload["cards_odds_available"] is True
     assert payload["families"]["corners"]
     assert payload["families"]["cards"]
+    assert payload["families"]["exact score"]
+    assert any(item["code"] == "EXACT_SCORE_1_0" for item in payload["market_levels"]["mercado_detectado"])
 
     total_leagues = payload["summary"]["total_ligas"]
     assert total_leagues >= 2
@@ -431,6 +434,38 @@ def test_calcular_partido_exposes_corners_cards_families_when_input_contains_mar
     assert result["cards_odds_available"] is True
     assert result["families"]["corners"]
     assert result["families"]["cards"]
+
+
+def test_calcular_partido_keeps_detected_markets_without_advanced_stats():
+    fixture = base_fixture()
+    fixture.update(
+        {
+            "gf_home": 0,
+            "ga_home": 0,
+            "gf_away": 0,
+            "ga_away": 0,
+            "cf_home": None,
+            "cf_away": None,
+            "shots_home": None,
+            "shots_away": None,
+            "families": {
+                "fouls": [{"code": "FOULS_TOTAL", "market": "fouls_total", "pick": "Over 21.5", "odds": 1.91}],
+                "double_chance": [{"code": "DC_1X", "market": "double_chance", "pick": "1X", "odds": 1.50}],
+            },
+            "market_catalog": [
+                {"code": "TOTAL_SHOTONGOAL", "family": "shots_on_target", "line": 8.5, "odd": 1.83},
+                {"code": "HOME_CORNERS_1H", "family": "corners", "scope": "home", "period": "1st_half", "line": 2.5, "odd": 1.72},
+            ],
+        }
+    )
+    result = predictor.calcular_partido(fixture)
+    breakdown = {item["code"]: item for item in result["market_breakdown"]}
+    assert "FOULS_TOTAL" in breakdown
+    assert breakdown["FOULS_TOTAL"]["market_complete"] is False
+    assert breakdown["FOULS_TOTAL"]["detected_only"] is True
+    assert result["families"]["fouls"]
+    assert result["families"]["double_chance"]
+    assert result["families"]["shots_on_target"]
 
 
 def test_dashboard_family_classifier_supports_corner_and_card_synonyms():

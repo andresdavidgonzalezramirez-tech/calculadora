@@ -65,16 +65,16 @@ if STATIC_DIR.exists():
 
 MARKET_FAMILY_RULES = [
     ("Double chance", ("DC_", "DOUBLE CHANCE", "DOBLE OPORTUNIDAD")),
-    ("Exact score", ("EXACT SCORE", "MARCADOR EXACTO", "SCORE_EXACT")),
-    ("Shots on target", ("SOT", "SHOTS ON TARGET", "TIROS A PUERTA")),
+    ("Exact score", ("EXACT SCORE", "EXACT_SCORE", "MARCADOR EXACTO", "CORRECT SCORE", "SCORE_EXACT")),
+    ("Shots on target", ("SHOTONGOAL", "SHOTS ON TARGET", "SOT", "TIROS A PUERTA")),
     ("Corners", ("CORNER", "ESQUINA", "SAQUE DE ESQUINA")),
     ("Cards", ("CARD", "TARJET", "BOOKING", "YELLOW", "AMARILLA", "AMONEST")),
-    ("Shots", ("SHOT", "TIRO")),
     ("Fouls", ("FOUL", "FALTA")),
     ("Offsides", ("OFFSIDE", "FUERA DE JUEGO")),
-    ("BTTS", ("BTTS", "AMBOS")),
-    ("1X2", ("1X2",)),
-    ("Goals", ("OVER", "UNDER", "TEAM_", "GOALS", "SCORE")),
+    ("Shots", ("SHOT", "TIRO")),
+    ("BTTS", ("BTTS", "AMBOS", "BOTH TEAMS TO SCORE")),
+    ("1X2", ("1X2", "MATCH_WINNER", "MATCH WINNER")),
+    ("Goals", ("OVER", "UNDER", "TEAM_", "GOALS", "TOTAL_GOALS", "ASIAN", "HANDICAP", "GOAL")),
 ]
 SECONDARY_FAMILIES = {"Corners", "Cards", "Shots", "Secondary"}
 MIN_MODEL_PROBABILITY = float(os.getenv("MIN_MODEL_PROBABILITY", "0.40"))
@@ -240,14 +240,25 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 "reliability": num_or_none(item.get("reliability"), 4),
                 "stability": num_or_none(item.get("stability"), 4),
             }
+            if market_complete and (model_prob or 0) >= 0.50 and (ev is not None and ev > 0):
+                opportunity["market_level"] = "top_opportunity"
+            elif (model_prob or implied_prob or 0) >= 0.40:
+                opportunity["market_level"] = "mercado_util"
+            elif odds is not None:
+                opportunity["market_level"] = "mercado_detectado"
+            else:
+                opportunity["market_level"] = "descartado"
 
             market_telemetry[fixture_key][opportunity["code"]] = opportunity
             all_opportunities.append(opportunity)
 
-            is_publishable = bool(market_complete and model_prob is not None and model_prob >= MIN_MODEL_PROBABILITY)
+            is_publishable = bool(
+                (model_prob is not None and model_prob >= MIN_MODEL_PROBABILITY)
+                or (model_prob is None and odds is not None)
+            )
             opportunity["publishable"] = is_publishable
 
-            if opportunity["flags"]["ev_plus"] and is_publishable:
+            if opportunity["flags"]["ev_plus"] and market_complete and is_publishable:
                 opportunities_ev.append(opportunity)
                 top_by_family.setdefault(family, []).append(opportunity)
                 included.append(opportunity)
@@ -301,7 +312,10 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
         reverse=True,
     )[:limit]
     level_b_useful_market = sorted(
-        [item for item in all_opportunities if (item.get("model_prob") or 0) >= 0.40],
+        [
+            item for item in all_opportunities
+            if (item.get("model_prob") or item.get("implied_prob") or 0) >= 0.40
+        ],
         key=lambda item: (item.get("close_probability") or -1, item.get("edge") or -999),
         reverse=True,
     )[:limit]
