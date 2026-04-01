@@ -77,7 +77,7 @@ MARKET_FAMILY_RULES = [
     ("Goals", ("OVER", "UNDER", "TEAM_", "GOALS", "SCORE")),
 ]
 SECONDARY_FAMILIES = {"Corners", "Cards", "Shots", "Secondary"}
-MIN_MODEL_PROBABILITY = float(os.getenv("MIN_MODEL_PROBABILITY", "0.50"))
+MIN_MODEL_PROBABILITY = float(os.getenv("MIN_MODEL_PROBABILITY", "0.40"))
 
 VISIBLE_FIXTURE_STATUSES = {"NS"}
 HIDDEN_FIXTURE_STATUSES = {"1H", "HT", "2H", "LIVE", "FT", "AET", "PEN", "CANC", "ABD", "PST"}
@@ -290,27 +290,35 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
         item["ligas"] = leagues
         paises.append(item)
 
-    opportunities_ev_sorted = sorted(
-        opportunities_ev,
-        key=lambda item: (item.get("close_probability") or -1, item.get("ev") or -999),
-        reverse=True,
-    )[:limit]
+    opportunities_ev_sorted = sorted(opportunities_ev, key=lambda item: (item.get("close_probability") or -1, item.get("ev") or -999), reverse=True)[:limit]
 
-    top_opportunities = sorted(
-        [item for item in all_opportunities if item.get("market_complete") and item.get("publishable")],
+    level_a_top_opportunities = sorted(
+        [
+            item for item in all_opportunities
+            if item.get("market_complete") and (item.get("model_prob") or 0) >= 0.50 and (item.get("ev") is not None and item.get("ev") > 0)
+        ],
         key=lambda item: (item.get("close_probability") or -1, item.get("edge") or -999),
         reverse=True,
     )[:limit]
-
-    top_by_family_sorted = {
-        family: sorted(items, key=lambda item: (item.get("close_probability") or -1, item.get("ev") or -999), reverse=True)[:50]
-        for family, items in top_by_family.items()
-    }
+    level_b_useful_market = sorted(
+        [item for item in all_opportunities if (item.get("model_prob") or 0) >= 0.40],
+        key=lambda item: (item.get("close_probability") or -1, item.get("edge") or -999),
+        reverse=True,
+    )[:limit]
+    level_c_detected_market = sorted(
+        [item for item in all_opportunities if item.get("odds") is not None],
+        key=lambda item: (item.get("close_probability") or -1, item.get("odds") or -999),
+        reverse=True,
+    )[:limit]
 
     families_payload: Dict[str, List[Dict[str, Any]]] = {}
     for item in all_opportunities:
         family = str(item.get("family") or "Secondary")
         families_payload.setdefault(family.lower(), []).append(item)
+    top_by_family_sorted = {
+        family: sorted(items, key=lambda item: (item.get("close_probability") or -1, item.get("ev") or -999), reverse=True)[:50]
+        for family, items in families_payload.items()
+    }
 
     summary = {
         "total_paises": len(paises),
@@ -319,8 +327,8 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
         "total_mercados_analizados": len(all_opportunities),
         "total_senales": sum(len(row.apuestas_fuertes or []) for row in rows_sorted),
         "total_oportunidades_ev_plus": len(opportunities_ev_sorted),
-        "total_apuestas_fuertes": sum(1 for item in top_opportunities if item["flags"]["strong_signal"]),
-        "total_value_bets": sum(1 for item in top_opportunities if item["flags"]["value"]),
+        "total_apuestas_fuertes": sum(1 for item in level_a_top_opportunities if item["flags"]["strong_signal"]),
+        "total_value_bets": sum(1 for item in level_a_top_opportunities if item["flags"]["value"]),
     }
 
     return {
@@ -328,8 +336,13 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
         "partidos": partidos,
         "market_telemetry": market_telemetry,
         "oportunidades_ev": opportunities_ev_sorted,
-        "top_opportunities": top_opportunities,
+        "top_opportunities": level_a_top_opportunities,
         "top_by_family": top_by_family_sorted,
+        "market_levels": {
+            "top_opportunities": level_a_top_opportunities,
+            "mercado_util": level_b_useful_market,
+            "mercado_detectado": level_c_detected_market,
+        },
         "apuestas_fuertes": [item for row in rows_sorted for item in (row.apuestas_fuertes or [])][:limit],
         "paises": paises,
         "match_radar": match_radar[:limit],
