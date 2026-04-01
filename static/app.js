@@ -47,6 +47,7 @@ const FAMILY_LABELS = {
   "Fouls": "Fouls",
   "Offsides": "Offsides",
   "Double chance": "Double chance",
+  "Exact score": "Exact score",
   "Secondary": "Secondary",
 };
 const MIN_MODEL_PROBABILITY = 0.5;
@@ -109,13 +110,14 @@ function inferFamily(raw = {}) {
 
   if (["DOUBLE CHANCE", "DOBLE OPORTUNIDAD", " DC_", " DC "].some((k) => token.includes(k))) return "Double chance";
   if (["SHOTS ON TARGET", "SOT", "TIROS A PUERTA", "PUERTA"].some((k) => token.includes(k))) return "Shots on target";
-  if (["CORNER", "CORNERS", "SAQUES DE ESQUINA"].some((k) => token.includes(k))) return "Corners";
-  if (["CARD", "CARDS", "TARJET", "AMARILLA", "ROJA"].some((k) => token.includes(k))) return "Cards";
+  if (["CORNER", "CORNERS", "ESQUINA", "SAQUES DE ESQUINA"].some((k) => token.includes(k))) return "Corners";
+  if (["CARD", "CARDS", "TARJET", "BOOKING", "YELLOW", "AMARILLA", "AMONEST", "ROJA"].some((k) => token.includes(k))) return "Cards";
   if (["SHOT", "SHOTS", "TIROS", "REMATES"].some((k) => token.includes(k))) return "Shots";
   if (["FOUL", "FOULS", "FALTAS"].some((k) => token.includes(k))) return "Fouls";
   if (["OFFSIDE", "OFFSIDES", "FUERA DE JUEGO"].some((k) => token.includes(k))) return "Offsides";
   if (["BTTS", "AMBOS MARCAN", "BOTH TEAMS TO SCORE"].some((k) => token.includes(k))) return "BTTS";
   if (["1X2", "DRAW", "EMPATE"].some((k) => token.includes(k))) return "1X2";
+  if (["EXACT SCORE", "MARCADOR EXACTO"].some((k) => token.includes(k))) return "Exact score";
   if (["TEAM", "MARCARA", "SCORE YES", "GOLES EQUIPO", "GOALS", "GOLES", "OVER", "UNDER", "TOTAL"].some((k) => token.includes(k))) return "Goals";
   return "Secondary";
 }

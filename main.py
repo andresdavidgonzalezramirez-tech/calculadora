@@ -65,9 +65,10 @@ if STATIC_DIR.exists():
 
 MARKET_FAMILY_RULES = [
     ("Double chance", ("DC_", "DOUBLE CHANCE", "DOBLE OPORTUNIDAD")),
+    ("Exact score", ("EXACT SCORE", "MARCADOR EXACTO", "SCORE_EXACT")),
     ("Shots on target", ("SOT", "SHOTS ON TARGET", "TIROS A PUERTA")),
-    ("Corners", ("CORNER",)),
-    ("Cards", ("CARD", "TARJET")),
+    ("Corners", ("CORNER", "ESQUINA", "SAQUE DE ESQUINA")),
+    ("Cards", ("CARD", "TARJET", "BOOKING", "YELLOW", "AMARILLA", "AMONEST")),
     ("Shots", ("SHOT", "TIRO")),
     ("Fouls", ("FOUL", "FALTA")),
     ("Offsides", ("OFFSIDE", "FUERA DE JUEGO")),
@@ -334,14 +335,8 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
         "match_radar": match_radar[:limit],
         "summary": summary,
         "families": families_payload,
-        "corners_odds_available": bool(
-            families_payload.get("corners")
-            and any(entry.get("odds") is not None for entry in families_payload.get("corners", []))
-        ),
-        "cards_odds_available": bool(
-            families_payload.get("cards")
-            and any(entry.get("odds") is not None for entry in families_payload.get("cards", []))
-        ),
+        "corners_odds_available": bool(families_payload.get("corners")),
+        "cards_odds_available": bool(families_payload.get("cards")),
         "filters": {
             "min_model_probability": MIN_MODEL_PROBABILITY,
         },
