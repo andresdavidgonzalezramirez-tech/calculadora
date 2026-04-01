@@ -299,7 +299,9 @@ function createOpportunityCard(opp) {
   const traceNotes = [];
   if (!opp.market_complete) traceNotes.push(opp.completeness_reason || "mercado_detectado_sin_pricing_completo");
   if (opp.reason_discard) traceNotes.push(`Descarte: ${opp.reason_discard}`);
-  node.querySelector(".trace").textContent = `Fuente: ${opp.source || "N/D"} · Inclusión: ${opp.reason_inclusion || "N/D"}${traceNotes.length ? ` · ${traceNotes.join(" · ")}` : ""}`;
+  const traceNode = node.querySelector(".trace");
+  traceNode.textContent = `Fuente: ${opp.source || "N/D"} · Inclusión: ${opp.reason_inclusion || "N/D"}${traceNotes.length ? ` · ${traceNotes.join(" · ")}` : ""}`;
+  traceNode.hidden = state.ui.hideTraceability;
   return node;
 }
 
@@ -315,7 +317,10 @@ function renderOpportunityList(containerId, opportunities, emptyText) {
     }
     return o.visibility_allowed === true && o.publish_allowed === true;
   });
-  if (!safeRows.length) return;
+  if (!safeRows.length) {
+    if (emptyText) container.innerHTML = `<p class="empty">${emptyText}</p>`;
+    return;
+  }
   safeRows.forEach((o) => container.appendChild(createOpportunityCard(o)));
 }
 
@@ -422,6 +427,18 @@ function renderLeagueExplorer(tree) {
   });
 }
 
+function hasActionablePick(opp) {
+  if (!opp) return false;
+  if (state.ui.validOnly) return opp.publishable === true || opp.publish_allowed === true;
+  return opp.odds !== null;
+}
+
+function passesUiVisibility(opp) {
+  if (!hasActionablePick(opp)) return false;
+  if (state.ui.hideEmptyFixtures && !opp.publishable && !opp.publish_allowed) return false;
+  return true;
+}
+
 function renderMatchRadar(radarRows) {
   const container = q("match-radar");
   container.innerHTML = "";
@@ -429,8 +446,8 @@ function renderMatchRadar(radarRows) {
   radarRows.forEach((row) => {
     const card = document.createElement("article");
     card.className = "match-card";
-    const included = (row.oportunidades_incluidas || []).map(normalizeOpportunity).filter((o) => o.publishable || o.odds !== null);
-    const excluded = (row.oportunidades_excluidas || []).map(normalizeOpportunity).filter((o) => o.publishable || o.odds !== null);
+    const included = (row.oportunidades_incluidas || []).map(normalizeOpportunity).filter(passesUiVisibility);
+    const excluded = (row.oportunidades_excluidas || []).map(normalizeOpportunity).filter((o) => !state.ui.validOnly && passesUiVisibility(o));
     if (state.ui.hideEmptyFixtures && !included.length) return;
     card.innerHTML = `<div class="match-head"><strong>${row.equipos?.local || "Local"} vs ${row.equipos?.visitante || "Visitante"}</strong><span>${row.liga || "N/D"} · ${row.pais || "N/D"}</span><span>${dateLabel(row.hora)} · ${countdownLabel(row.hora, row.fixture_status_current || row.estado)}</span><span>Familias: ${(row.familias_detectadas || []).join(", ") || "N/D"}</span></div>`;
 
@@ -567,20 +584,41 @@ function bindFilters() {
   q("refresh-btn").addEventListener("click", refreshDashboard);
   q("toggle-valid-only")?.addEventListener("click", () => {
     state.ui.validOnly = !state.ui.validOnly;
+    syncToggleButtons();
     renderFromState();
   });
   q("toggle-hide-trace")?.addEventListener("click", () => {
     state.ui.hideTraceability = !state.ui.hideTraceability;
+    syncToggleButtons();
     renderFromState();
   });
   q("toggle-hide-empty-fixtures")?.addEventListener("click", () => {
     state.ui.hideEmptyFixtures = !state.ui.hideEmptyFixtures;
+    syncToggleButtons();
     renderFromState();
   });
   q("cleanup-old-records")?.addEventListener("click", async () => {
-    await fetch("/panel/cleanup-old-records", { method: "POST" });
-    await refreshDashboard();
+    try {
+      const res = await fetch("/panel/cleanup-old-records?keep_recent_hours=168", { method: "POST" });
+      if (!res.ok) throw new Error(`cleanup failed ${res.status}`);
+      await refreshDashboard();
+    } catch (e) {
+      console.error("cleanup-old-records failed", e);
+      setRefreshState("error", "Error limpieza");
+    }
   });
+}
+
+function syncToggleButtons() {
+  const setLabel = (id, enabledText, disabledText, isEnabled) => {
+    const el = q(id);
+    if (!el) return;
+    el.textContent = isEnabled ? enabledText : disabledText;
+    el.classList.toggle("active", isEnabled);
+  };
+  setLabel("toggle-valid-only", "Mostrar todo", "Mostrar solo apuestas válidas", state.ui.validOnly);
+  setLabel("toggle-hide-trace", "Mostrar trazabilidad", "Ocultar trazabilidad", state.ui.hideTraceability);
+  setLabel("toggle-hide-empty-fixtures", "Mostrar partidos sin picks", "Ocultar partidos sin picks", state.ui.hideEmptyFixtures);
 }
 
 function populateFamilySelector() {
@@ -603,6 +641,7 @@ function renderFromState() {
   const base = applyFilters(state.opportunities, { respectFamily: false });
   const relaxed = applyFilters(state.opportunities, { respectFamily: false, relaxNumeric: true, relaxQuick: true });
   const notices = [];
+  const strictFixtureIds = new Set(strict.map((o) => Number(o.fixture_id)).filter(Number.isFinite));
 
   const topSection = selectSectionWithFallback(
     strict,
@@ -673,8 +712,15 @@ function renderFromState() {
 
   renderFilterNotices(notices);
   renderKpis(state.summary);
-  renderLeagueExplorer(state.countryTree);
-  renderMatchRadar(state.matchRadar);
+  renderLeagueExplorer(state.countryTree.filter((country) => {
+    const leagues = (country.ligas || []).filter((league) => (league.partidos || 0) > 0);
+    return leagues.length > 0;
+  }));
+  const filteredRadar = state.matchRadar.filter((row) => {
+    if (!strictFixtureIds.size) return !state.ui.hideEmptyFixtures;
+    return strictFixtureIds.has(Number(row.fixture_id));
+  });
+  renderMatchRadar(filteredRadar);
 }
 
 function setRefreshState(mode, text) {
@@ -732,6 +778,7 @@ async function refreshDashboard() {
     state.countryTree = payload.paises || [];
     state.summary = computeSummary(payload);
     populateSelectors();
+    syncToggleButtons();
     renderFromState();
     q("last-updated").textContent = `Última actualización: ${dateLabel(payload.generated_at || new Date().toISOString())}`;
     setRefreshState("ok", "Actualizado");
@@ -746,6 +793,7 @@ async function refreshDashboard() {
 if (typeof window !== "undefined") {
   window.addEventListener("DOMContentLoaded", () => {
     bindFilters();
+    syncToggleButtons();
     refreshDashboard();
   });
 }
