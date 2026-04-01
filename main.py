@@ -27,7 +27,7 @@ from db import (
     init_db,
     utcnow,
 )
-from predictor import calcular_alerta_pricing, calcular_partido
+from predictor import calcular_alerta_pricing, calcular_partido, extract_odds
 
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -596,6 +596,10 @@ class FixtureInput(BaseModel):
     odds: Dict[str, Any] = Field(default_factory=dict)
     market_catalog: Any = Field(default_factory=list)
     families: Dict[str, Any] = Field(default_factory=dict)
+    bookmakers: List[Dict[str, Any]] = Field(default_factory=list)
+    markets: Any = Field(default_factory=list)
+    odds_data: Any = Field(default_factory=dict)
+    market_odds: Any = Field(default_factory=dict)
     feature_availability: Dict[str, Any] = Field(default_factory=dict)
     market_blocking_reasons: Dict[str, Any] = Field(default_factory=dict)
     advanced_sample_counts: Dict[str, Any] = Field(default_factory=dict)
@@ -710,15 +714,22 @@ def store_stats_cache(db: Session, item: FixtureInput) -> None:
 
 
 def store_odds_snapshot(db: Session, item: FixtureInput) -> None:
-    odds = item.odds or {}
+    payload = item.model_dump()
+    odds = extract_odds(payload)
     meta = item.collection_meta or {}
+    bookmaker_id = meta.get("bookmaker_preferred")
+    bookmaker_name = meta.get("bookmaker_name")
+    if (bookmaker_id is None or bookmaker_name in (None, "")) and item.bookmakers:
+        first = item.bookmakers[0] if isinstance(item.bookmakers[0], dict) else {}
+        bookmaker_id = bookmaker_id if bookmaker_id is not None else first.get("id")
+        bookmaker_name = bookmaker_name or first.get("name")
 
     db.add(
         OddsSnapshot(
             fixture_id=item.fixture_id,
             snapshot_at=utcnow(),
-            bookmaker_id=meta.get("bookmaker_preferred"),
-            bookmaker_name=meta.get("bookmaker_name"),
+            bookmaker_id=bookmaker_id,
+            bookmaker_name=bookmaker_name,
             home=odds.get("home"),
             draw=odds.get("draw"),
             away=odds.get("away"),
@@ -739,7 +750,7 @@ def store_odds_snapshot(db: Session, item: FixtureInput) -> None:
             shots_away=odds.get("shots_away"),
             sot_home=odds.get("sot_home"),
             sot_away=odds.get("sot_away"),
-            raw_payload=odds,
+            raw_payload={"odds": item.odds or {}, "normalized_odds": odds},
         )
     )
 
