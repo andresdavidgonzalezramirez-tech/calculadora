@@ -304,6 +304,36 @@ def test_panel_dashboard_only_ns_future_and_multiple_markets(monkeypatch):
     assert total_leagues >= 2
 
 
+def test_panel_dashboard_fallback_includes_hidden_when_no_visible(monkeypatch):
+    main.app.dependency_overrides.clear()
+    fixed_now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(main, "now_utc", lambda: fixed_now)
+
+    with db.SessionLocal() as session:
+        session.query(main.Prediction).delete()
+        session.query(main.Fixture).delete()
+        _seed_prediction_with_status(
+            session,
+            fixture_id=3101,
+            status_short="LIVE",
+            fixture_dt=fixed_now + timedelta(hours=1),
+            market_breakdown=[],
+            league_name="Serie A",
+            country="Italy",
+        )
+        session.commit()
+
+    client = TestClient(main.app)
+    response = client.get("/panel/dashboard?limit=20")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["partidos"]
+    assert payload["partidos"][0]["fixture_id"] == 3101
+    assert payload["debug"]["fixtures_visible"] == 0
+    assert payload["debug"]["fixtures_hidden"] >= 1
+
+
 def test_parse_dt_treats_naive_input_as_warsaw_and_converts_to_utc():
     dt = main.parse_dt("2026-03-31T19:00:00")
     assert dt is not None
@@ -314,6 +344,12 @@ def test_parse_dt_treats_naive_input_as_warsaw_and_converts_to_utc():
 def test_parse_dt_keeps_explicit_utc_timestamp_stable():
     dt = main.parse_dt("2026-03-31T17:00:00Z")
     assert dt is not None
+
+
+def test_create_app_respects_root_path(monkeypatch):
+    monkeypatch.setenv("ROOT_PATH", "/projects/bankeban/app/calculadora")
+    app = main.create_app()
+    assert app.root_path == "/projects/bankeban/app/calculadora"
 
 
 def test_calcular_partido_pricing_completo_para_mercados_avanzados_dinamicos():
