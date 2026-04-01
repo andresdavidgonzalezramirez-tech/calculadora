@@ -387,7 +387,7 @@ def test_panel_dashboard_only_ns_future_and_multiple_markets(monkeypatch):
     assert total_leagues >= 2
 
 
-def test_panel_dashboard_fallback_includes_hidden_when_no_visible(monkeypatch):
+def test_panel_dashboard_returns_empty_when_no_visible(monkeypatch):
     main.app.dependency_overrides.clear()
     fixed_now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(main, "now_utc", lambda: fixed_now)
@@ -411,8 +411,7 @@ def test_panel_dashboard_fallback_includes_hidden_when_no_visible(monkeypatch):
     assert response.status_code == 200
     payload = response.json()
 
-    assert payload["partidos"]
-    assert payload["partidos"][0]["fixture_id"] == 3101
+    assert payload["partidos"] == []
     assert payload["debug"]["fixtures_visible"] == 0
     assert payload["debug"]["fixtures_hidden"] >= 1
 

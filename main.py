@@ -1589,7 +1589,7 @@ def panel_dashboard(
         else:
             hidden_rows.append(prediction)
 
-    payload_rows = visible_rows if visible_rows else [*visible_rows, *hidden_rows]
+    payload_rows = visible_rows
     payload = build_dashboard_payload(payload_rows[:limit], limit=limit)
     payload["selected_run_id"] = int(selected_run_id) if selected_run_id is not None else None
     payload["workflow_name"] = workflow_name
