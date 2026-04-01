@@ -77,6 +77,8 @@ MARKET_FAMILY_RULES = [
     ("Goals", ("OVER", "UNDER", "TEAM_", "GOALS", "TOTAL_GOALS", "ASIAN", "HANDICAP", "GOAL")),
 ]
 SECONDARY_FAMILIES = {"Corners", "Cards", "Shots", "Secondary"}
+CORE_FAMILIES = {"1X2", "BTTS", "Double chance", "Goals"}
+SECONDARY_VISIBLE_FAMILIES = {"Corners", "Cards"}
 MIN_MODEL_PROBABILITY = float(os.getenv("MIN_MODEL_PROBABILITY", "0.40"))
 
 VISIBLE_FIXTURE_STATUSES = {"NS"}
@@ -173,14 +175,21 @@ def classify_market_level(
     ev: Optional[float],
     odds: Optional[float],
 ) -> str:
-    baseline_prob = model_prob if model_prob is not None else implied_prob
-    if (baseline_prob or 0) >= 0.50 and (ev is not None and ev > 0):
+    if model_prob is not None and (model_prob or 0) >= 0.50 and (ev is not None and ev > 0):
         return "top_opportunity"
-    if (baseline_prob or 0) >= 0.40:
+    if model_prob is not None and (model_prob or 0) >= 0.40:
         return "mercado_util"
     if odds is not None:
         return "mercado_detectado"
     return "descartado"
+
+
+def family_priority(family: str) -> str:
+    if family in CORE_FAMILIES:
+        return "core"
+    if family in SECONDARY_VISIBLE_FAMILIES:
+        return "secondary"
+    return "experimental"
 
 
 def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any]:
@@ -209,17 +218,38 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 continue
 
             model_prob = num_or_none(item.get("prob"), 6)
+            raw_prob = num_or_none(item.get("raw_prob"), 6)
+            calibrated_prob = num_or_none(item.get("calibrated_prob"), 6) or model_prob
             odds = num_or_none(item.get("cuota"), 4)
             implied_prob = num_or_none(item.get("probabilidad_implicita"), 6)
             edge = num_or_none(item.get("edge"), 6)
             ev = num_or_none(item.get("ev"), 6)
+            calibration_status = str(item.get("calibration_status") or ("ready" if calibrated_prob is not None else "missing"))
             if implied_prob is None and odds is not None and odds > 1:
                 implied_prob = round(1.0 / odds, 6)
-            if ev is None and model_prob is not None and odds is not None:
-                ev = round((model_prob * odds) - 1.0, 6)
-            market_complete = bool(item.get("market_complete") and model_prob is not None and odds is not None and implied_prob is not None)
+            break_even_prob = round(1.0 / odds, 6) if odds is not None and odds > 1 else None
+            market_fair_prob = num_or_none(item.get("probabilidad_justa"), 6) or implied_prob
+            ev = ev if (calibrated_prob is not None and odds is not None) else None
+            edge = edge if (calibrated_prob is not None and implied_prob is not None) else None
+            edge_price = round(calibrated_prob - break_even_prob, 6) if calibrated_prob is not None and break_even_prob is not None else None
+            edge_market = round(calibrated_prob - market_fair_prob, 6) if calibrated_prob is not None and market_fair_prob is not None else None
+            delta_prob = num_or_none(item.get("delta_prob"), 6)
+            if delta_prob is None and calibrated_prob is not None and implied_prob is not None:
+                delta_prob = round(calibrated_prob - implied_prob, 6)
+            market_complete = bool(item.get("market_complete") and calibrated_prob is not None and odds is not None and implied_prob is not None and edge is not None and ev is not None)
+            anomaly_flag = bool(calibrated_prob is not None and market_fair_prob is not None and abs(calibrated_prob - market_fair_prob) > 0.20)
+            readiness = "ready" if market_complete else "incomplete"
+            recommended = bool(
+                calibrated_prob is not None
+                and calibration_status == "ready"
+                and readiness == "ready"
+                and ev is not None and ev > 0
+                and calibrated_prob >= 0.60
+                and not anomaly_flag
+            )
             family = infer_market_family(item.get("code"), item.get("mercado"), item.get("family"))
             detected_families.add(family)
+            fam_priority = family_priority(family)
 
             opportunity = {
                 "fixture_id": fixture_id,
@@ -234,11 +264,20 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 "family": family,
                 "line": num_or_none(item.get("line"), 2),
                 "odds": odds,
-                "model_prob": model_prob,
+                "model_prob": calibrated_prob,
+                "raw_prob": raw_prob,
+                "calibrated_prob": calibrated_prob,
+                "calibration_status": calibration_status,
+                "calibrator_version": item.get("calibrator_version"),
                 "implied_prob": implied_prob,
+                "market_fair_prob": market_fair_prob,
+                "break_even_prob": break_even_prob,
+                "delta_prob": delta_prob,
                 "edge": edge,
+                "edge_price": edge_price,
+                "edge_market": edge_market,
                 "ev": ev,
-                "close_probability": num_or_none(item.get("close_probability"), 6) or model_prob,
+                "close_probability": num_or_none(item.get("close_probability"), 6) if calibrated_prob is not None else None,
                 "market_complete": market_complete,
                 "completeness_reason": None if market_complete else "missing_pricing_or_probability",
                 "flags": {
@@ -254,16 +293,44 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 "fragility": num_or_none(item.get("fragility"), 4),
                 "reliability": num_or_none(item.get("reliability"), 4),
                 "stability": num_or_none(item.get("stability"), 4),
+                "family_priority": fam_priority,
             }
             opportunity["market_level"] = classify_market_level(model_prob, implied_prob, ev, odds)
+            opportunity["visible_en_panel"] = bool(odds is not None)
+            opportunity["recomendado"] = recommended
+            opportunity["arbitrage"] = bool(item.get("arbitrage") is True)
+            opportunity["readiness"] = readiness
+            opportunity["anomaly_flag"] = anomaly_flag
+            opportunity["publish_allowed"] = recommended
+            opportunity["visibility_allowed"] = bool(opportunity["visible_en_panel"] and fam_priority in {"core", "secondary"})
+            opportunity["is_strong_pick"] = bool(calibrated_prob is not None and calibrated_prob >= 0.60)
+            opportunity["is_positive_bet"] = bool(ev is not None and ev > 0)
+            opportunity["is_recommended_pick"] = recommended
+            opportunity["probability_tier"] = (
+                "elite" if calibrated_prob is not None and calibrated_prob >= 0.75
+                else "high" if calibrated_prob is not None and calibrated_prob >= 0.60
+                else "medium" if calibrated_prob is not None and calibrated_prob >= 0.50
+                else "low"
+            )
+            opportunity["hidden_reason"] = None if opportunity["visibility_allowed"] else "experimental_hidden_by_default"
+            opportunity["blocking_reason"] = None if recommended else ("anomaly_flag" if anomaly_flag else "not_recommended")
+            opportunity["label"] = (
+                "Arbitraje detectado"
+                if opportunity["arbitrage"]
+                else "Pick calculado"
+                if opportunity["recomendado"]
+                else "Pricing incompleto"
+                if not market_complete
+                else "Mercado detectado"
+            )
 
             market_telemetry[fixture_key][opportunity["code"]] = opportunity
             all_opportunities.append(opportunity)
 
-            is_publishable = bool(odds is not None and opportunity["market_level"] in {"top_opportunity", "mercado_util", "mercado_detectado"})
+            is_publishable = bool(opportunity["visibility_allowed"])
             opportunity["publishable"] = is_publishable
 
-            if opportunity["flags"]["ev_plus"] and market_complete and is_publishable:
+            if recommended and is_publishable:
                 opportunities_ev.append(opportunity)
                 included.append(opportunity)
             else:
@@ -308,17 +375,17 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
     opportunities_ev_sorted = sorted(opportunities_ev, key=lambda item: (item.get("close_probability") or -1, item.get("ev") or -999), reverse=True)[:limit]
 
     level_a_top_opportunities = sorted(
-        [item for item in all_opportunities if item.get("market_level") == "top_opportunity" and item.get("publishable")],
+        [item for item in all_opportunities if item.get("market_level") == "top_opportunity" and item.get("recomendado")],
         key=lambda item: (item.get("close_probability") or -1, item.get("edge") or -999),
         reverse=True,
     )[:limit]
     level_b_useful_market = sorted(
-        [item for item in all_opportunities if item.get("market_level") == "mercado_util" and item.get("publishable")],
+        [item for item in all_opportunities if item.get("market_level") == "mercado_util" and item.get("recomendado")],
         key=lambda item: (item.get("close_probability") or -1, item.get("edge") or -999),
         reverse=True,
     )[:limit]
     level_c_detected_market = sorted(
-        [item for item in all_opportunities if item.get("market_level") == "mercado_detectado" and item.get("publishable")],
+        [item for item in all_opportunities if item.get("market_level") == "mercado_detectado" and item.get("visible_en_panel")],
         key=lambda item: (item.get("close_probability") or -1, item.get("odds") or -999),
         reverse=True,
     )[:limit]
@@ -355,6 +422,7 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
             "mercado_util": level_b_useful_market,
             "mercado_detectado": level_c_detected_market,
         },
+        "arbitrage_opportunities": [item for item in all_opportunities if item.get("arbitrage")][:limit],
         "apuestas_fuertes": [item for row in rows_sorted for item in (row.apuestas_fuertes or [])][:limit],
         "paises": paises,
         "match_radar": match_radar[:limit],
