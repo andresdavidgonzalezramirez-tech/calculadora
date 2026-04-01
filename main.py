@@ -55,7 +55,7 @@ def get_frontend_base_path() -> str:
 
 
 def get_runtime_port() -> int:
-    return int(os.getenv("PORT", os.getenv("APP_PORT", "8000")))
+    return int(os.getenv("PORT", os.getenv("APP_PORT", "3000")))
 
 
 def create_app() -> FastAPI:

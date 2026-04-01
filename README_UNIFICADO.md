@@ -12,7 +12,7 @@ Aplicación FastAPI para predicción probabilística de fútbol, cálculo EV+, f
 ```bash
 cp .env.example .env
 export DATABASE_URL="sqlite:///./dev.db"
-uvicorn main:app --host 0.0.0.0 --port 8000
+uvicorn main:app --host 0.0.0.0 --port 3000
 ```
 
 ## Docker / EasyPanel
@@ -28,7 +28,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 ### Build y run
 ```bash
 docker build -t calculadora .
-docker run --rm -p 8000:8000 --env-file .env calculadora
+docker run --rm -p 3000:3000 --env-file .env calculadora
 ```
 
 ## Configuración productiva relevante

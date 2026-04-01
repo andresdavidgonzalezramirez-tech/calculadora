@@ -15,9 +15,9 @@ RUN chmod +x /entrypoint.sh \
     && chown -R appuser:appuser /app /entrypoint.sh
 
 USER appuser
-EXPOSE 8000
+EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD python -c "import os,urllib.request;port=os.getenv('PORT',os.getenv('APP_PORT','8000'));urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=3)" || exit 1
+  CMD python -c "import os,urllib.request;port=os.getenv('PORT',os.getenv('APP_PORT','3000'));urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=3)" || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -23,11 +23,11 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-calculadora}:${POSTGRES_PASSWORD:-calculadora}@db:5432/${POSTGRES_DB:-calculadora}
       APP_HOST: 0.0.0.0
-      APP_PORT: 8000
+      APP_PORT: 3000
       DB_WAIT_TIMEOUT: 60
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
     ports:
-      - "${APP_PORT:-8000}:8000"
+      - "${APP_PORT:-3000}:3000"
 
 volumes:
   pgdata:
