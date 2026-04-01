@@ -63,6 +63,7 @@ summary { cursor: pointer; font-weight: 600; color: #cfe0ff; }
 @media (max-width: 960px) { .hero { flex-direction: column; align-items: flex-start; } }
 .hero-actions-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn-secondary { border: 1px solid #5d6ea0; border-radius: 12px; padding: 10px 16px; background: #111f44; color: #d7e6ff; cursor: pointer; font-weight: 700; }
+.btn-secondary.active { background: linear-gradient(120deg, var(--neon), #8effd8); color: #021018; border-color: transparent; }
 .notices-panel { padding: 10px 14px; }
 .filter-notices { display: grid; gap: 8px; }
 .filter-notice { margin: 0; padding: 8px 10px; border: 1px solid #37518a; border-radius: 10px; background: rgba(17, 35, 74, .6); color: #c4dbff; font-size: 13px; }
