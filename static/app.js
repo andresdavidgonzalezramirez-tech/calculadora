@@ -51,6 +51,8 @@ const FAMILY_LABELS = {
   "Secondary": "Secondary",
 };
 const MIN_MODEL_PROBABILITY = 0.4;
+const MIN_SIGNAL_DELTA = 0.02;
+const MIN_ACTIONABLE_ODDS = 1.05;
 const SCHEDULED_FIXTURE_STATUSES = new Set(["NS"]);
 const DISPLAY_TIMEZONE = "Europe/Warsaw";
 
@@ -186,6 +188,23 @@ function normalizeOpportunity(raw) {
   const ev = toNumber(raw.ev);
   const closeProbability = toNumber(raw.close_probability ?? raw.closeProb ?? raw.probabilidad_cierre);
 
+  const computedDelta = deltaProb ?? ((modelProb !== null && impliedProb !== null) ? modelProb - impliedProb : null);
+  const computedEv = (modelProb !== null && odds !== null) ? ((modelProb * odds) - 1) : ev;
+  const edgePrice = toNumber(raw.edge_price ?? ((modelProb !== null && odds !== null && odds > 1) ? (modelProb - (1 / odds)) : null));
+  const isValidSignal = Boolean(
+    raw.is_valid_signal ?? (computedDelta !== null && Math.abs(computedDelta) >= MIN_SIGNAL_DELTA)
+  );
+  const mathHide = (
+    computedEv === null || computedEv <= 0
+    || edgePrice === null || edgePrice <= 0
+    || !isValidSignal
+    || odds === null || odds <= MIN_ACTIONABLE_ODDS
+    || String(raw.calibration_status || "").toLowerCase() !== "ready"
+    || String(raw.readiness || "").toLowerCase() !== "ready"
+    || raw.anomaly_flag === true
+    || String(raw.family_priority || "").toLowerCase() !== "core"
+  );
+
   const normalized = {
     ...raw,
     fixture_id: raw.fixture_id ?? raw.fixtureId ?? null,
@@ -196,10 +215,11 @@ function normalizeOpportunity(raw) {
     odds,
     model_prob: modelProb,
     implied_prob: impliedProb,
-    delta_prob: deltaProb ?? ((modelProb !== null && impliedProb !== null) ? modelProb - impliedProb : null),
+    delta_prob: computedDelta,
     close_probability: modelProb !== null ? (closeProbability ?? modelProb) : null,
     edge,
-    ev,
+    ev: computedEv,
+    edge_price: edgePrice,
     rank: toNumber(raw.rank),
     score: toNumber(raw.score),
     stake: toNumber(raw.stake),
@@ -218,11 +238,12 @@ function normalizeOpportunity(raw) {
   };
   normalized.market_complete = isCompleteOpportunity(normalized);
   normalized.market_level = raw.market_level || classifyMarketLevel(normalized);
-  normalized.visible_en_panel = raw.visible_en_panel === true || normalized.odds !== null;
-  normalized.visibility_allowed = raw.visibility_allowed !== false;
-  normalized.recomendado = raw.recomendado === true;
+  normalized.publish_allowed = raw.publish_allowed === true && !mathHide;
+  normalized.visible_en_panel = normalized.publish_allowed;
+  normalized.visibility_allowed = normalized.publish_allowed;
+  normalized.recomendado = normalized.publish_allowed;
   normalized.arbitrage = raw.arbitrage === true;
-  normalized.publishable = raw.publishable === true || normalized.visible_en_panel;
+  normalized.publishable = normalized.publish_allowed;
   normalized.label = raw.label || (normalized.arbitrage ? "Arbitraje detectado" : normalized.recomendado ? "Pick calculado" : normalized.market_complete ? "Mercado detectado" : "Pricing incompleto");
   if (!normalized.publishable && normalized.model_prob !== null && normalized.model_prob < MIN_MODEL_PROBABILITY) {
     normalized.reason_discard = normalized.reason_discard || "below_min_model_probability_50";
@@ -279,14 +300,9 @@ function renderOpportunityList(containerId, opportunities, emptyText) {
   const container = q(containerId);
   container.innerHTML = "";
   const safeRows = opportunities.filter((o) => {
-    if (o.visibility_allowed === false) return false;
-    if (o.market_level === "top_opportunity") return true;
-    if (o.market_level === "mercado_util") return true;
-    if (o.market_level === "mercado_detectado") return o.odds !== null;
-    if (o.model_prob !== null) return o.model_prob >= MIN_MODEL_PROBABILITY || o.odds !== null;
-    return o.odds !== null;
+    return o.visibility_allowed === true && o.publish_allowed === true;
   });
-  if (!safeRows.length) return (container.innerHTML = `<p class="empty">${emptyText}</p>`);
+  if (!safeRows.length) return;
   safeRows.forEach((o) => container.appendChild(createOpportunityCard(o)));
 }
 
@@ -481,70 +497,19 @@ function dedupeOpportunities(opps) {
 
 function buildUnifiedOpportunities(payload) {
   const matchMap = new Map((payload.partidos || []).map((m) => [Number(m.fixture_id), m]));
-  const levels = payload.market_levels || {};
-  const prioritized = [
-    ...(payload.oportunidades_ev || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "oportunidades_ev" })),
-    ...(payload.top_opportunities || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "top_opportunities" })),
-    ...((levels.top_opportunities || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "market_levels.top_opportunities", market_level: o.market_level || "top_opportunity" }))),
-    ...((levels.mercado_util || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "market_levels.mercado_util", market_level: o.market_level || "mercado_util" }))),
-    ...((levels.mercado_detectado || []).map((o) => normalizeOpportunity({ ...o, source: o.source || "market_levels.mercado_detectado", market_level: o.market_level || "mercado_detectado" }))),
-    ...flattenTelemetry(payload),
-    ...flattenFamilies(payload),
-    ...((payload.apuestas_fuertes || []).map((s) => normalizeOpportunity({
-      code: s.code || s.mercado_codigo || s.mercado || "SIGNAL",
-      market: s.mercado || "Apuesta fuerte",
-      pick: s.jugada || "N/D",
-      family: s.family || inferFamily(s),
-      odds: s.cuota,
-      model_prob: s.probabilidad != null ? Number(s.probabilidad) / 100 : null,
-      edge: s.edge != null ? Number(s.edge) / 100 : null,
-      ev: null,
-      flags: { ev_plus: false, value: Boolean(s.value), strong_signal: true, secondary_market: true },
-      source: "apuestas_fuertes",
-      reason_inclusion: "apuestas_fuertes",
-    }))),
-  ];
+  const prioritized = [...flattenTelemetry(payload)];
 
   const unified = dedupeOpportunities(withFixtureContext(prioritized, matchMap));
   return {
     complete: unified.filter((o) => o.publishable),
-    incomplete: unified.filter((o) => !o.market_complete && o.odds !== null),
+    incomplete: [],
   };
 }
 
 function getFamilyDataset(family, strictDataset, baseDataset) {
   const strictFamily = strictDataset.filter((o) => o.family === family);
   if (strictFamily.length) return { rows: strictFamily.slice(0, 40), notice: null };
-
-  if (state.filters.family) {
-    return {
-      rows: [],
-      notice: `Hay mercados detectados para ${FAMILY_LABELS[family]} pero no cumplen los filtros activos.`,
-    };
-  }
-
-  const byFamilyRows = (state.byFamily[family.toLowerCase()] || state.byFamily[family] || []).map(normalizeOpportunity);
-  const familyWithContext = withFixtureContext(byFamilyRows, new Map(state.matches.map((m) => [Number(m.fixture_id), m])));
-  const filteredByFamily = applyFilters(familyWithContext.filter((o) => o.publishable || o.odds !== null), { respectFamily: false });
-  if (filteredByFamily.length) {
-    return {
-      rows: filteredByFamily.slice(0, 40),
-      notice: `Mostrando mercados ${FAMILY_LABELS[family]} disponibles en el payload.`,
-    };
-  }
-
-  const baseFamily = baseDataset.filter((o) => o.family === family);
-  if (baseFamily.length) {
-    return {
-      rows: baseFamily.slice(0, 40),
-      notice: `No hay resultados para esta familia con los filtros activos. Mostrando ${FAMILY_LABELS[family]} generales.`,
-    };
-  }
-
-  return {
-    rows: [],
-    notice: `No hay mercados renderizables para ${FAMILY_LABELS[family]} con los filtros activos.`,
-  };
+  return { rows: [], notice: null };
 }
 
 function getIncompleteFamilyDataset(family) {

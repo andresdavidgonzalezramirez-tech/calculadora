@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 MAX_GOALS = 10
 MAX_EVENTS = 40
 EPSILON = 1e-9
+MIN_SIGNAL_DELTA = 0.02
 INTEGRITY_HIGH_ODD_THRESHOLD = 2.6
 INTEGRITY_HIGH_MODEL_PROB_THRESHOLD = 0.62
 INTEGRITY_SUSPICIOUS_EDGE_FLOOR = 0.10
@@ -1223,6 +1224,11 @@ def _build_market(
     volatility = _market_volatility(code)
     stability = 1.0 - volatility
     pricing = _pricing_flags(prob, market_prob, odd, code)
+    implied = pricing.get("probabilidad_implicita")
+    ev = (prob * odd - 1.0) if odd is not None else None
+    edge_price = (prob - implied) if implied is not None else None
+    is_valid_signal = bool(edge_price is not None and abs(edge_price) >= MIN_SIGNAL_DELTA)
+    signal_degenerate = bool(edge_price is not None and abs(edge_price) < MIN_SIGNAL_DELTA)
     ease_bonus = STABLE_MARKET_PRIORITY.get(code, 1.0)
     has_odds = odd is not None and pricing["probabilidad_implicita"] is not None
     signal_tier = _signal_bucket(pricing["edge"], prob, stability, reliability, has_odds)
@@ -1271,6 +1277,10 @@ def _build_market(
         "oportunidad_detectada": pricing["oportunidad_detectada"],
         "probabilidad_implicita": pricing["probabilidad_implicita"],
         "probabilidad_justa": pricing["probabilidad_justa"],
+        "edge_price": edge_price,
+        "ev": ev,
+        "is_valid_signal": is_valid_signal,
+        "signal_degenerate": signal_degenerate,
         "reliability": reliability,
         "stability": stability,
         "data_quality": data_quality,

@@ -80,6 +80,8 @@ SECONDARY_FAMILIES = {"Corners", "Cards", "Shots", "Secondary"}
 CORE_FAMILIES = {"1X2", "BTTS", "Double chance", "Goals"}
 SECONDARY_VISIBLE_FAMILIES = {"Corners", "Cards"}
 MIN_MODEL_PROBABILITY = float(os.getenv("MIN_MODEL_PROBABILITY", "0.40"))
+MIN_SIGNAL_DELTA = 0.02
+MIN_ACTIONABLE_ODDS = 1.05
 
 VISIBLE_FIXTURE_STATUSES = {"NS"}
 HIDDEN_FIXTURE_STATUSES = {"1H", "HT", "2H", "LIVE", "FT", "AET", "PEN", "CANC", "ABD", "PST"}
@@ -229,8 +231,8 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 implied_prob = round(1.0 / odds, 6)
             break_even_prob = round(1.0 / odds, 6) if odds is not None and odds > 1 else None
             market_fair_prob = num_or_none(item.get("probabilidad_justa"), 6) or implied_prob
-            ev = ev if (calibrated_prob is not None and odds is not None) else None
-            edge = edge if (calibrated_prob is not None and implied_prob is not None) else None
+            ev = round((calibrated_prob * odds) - 1.0, 6) if (calibrated_prob is not None and odds is not None) else None
+            edge = round(calibrated_prob - implied_prob, 6) if (calibrated_prob is not None and implied_prob is not None) else None
             edge_price = round(calibrated_prob - break_even_prob, 6) if calibrated_prob is not None and break_even_prob is not None else None
             edge_market = round(calibrated_prob - market_fair_prob, 6) if calibrated_prob is not None and market_fair_prob is not None else None
             delta_prob = num_or_none(item.get("delta_prob"), 6)
@@ -239,17 +241,33 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
             market_complete = bool(item.get("market_complete") and calibrated_prob is not None and odds is not None and implied_prob is not None and edge is not None and ev is not None)
             anomaly_flag = bool(calibrated_prob is not None and market_fair_prob is not None and abs(calibrated_prob - market_fair_prob) > 0.20)
             readiness = "ready" if market_complete else "incomplete"
-            recommended = bool(
+            is_valid_signal = bool(
                 calibrated_prob is not None
-                and calibration_status == "ready"
-                and readiness == "ready"
+                and implied_prob is not None
+                and abs(calibrated_prob - implied_prob) >= MIN_SIGNAL_DELTA
+            )
+            publish_allowed_base = bool(
+                is_valid_signal
                 and ev is not None and ev > 0
-                and calibrated_prob >= 0.60
-                and not anomaly_flag
+                and edge_price is not None and edge_price > 0
+                and calibrated_prob is not None and calibrated_prob >= 0.60
+                and readiness == "ready"
+                and calibration_status == "ready"
             )
             family = infer_market_family(item.get("code"), item.get("mercado"), item.get("family"))
             detected_families.add(family)
             fam_priority = family_priority(family)
+            hide = bool(
+                ev is None or ev <= 0
+                or edge_price is None or edge_price <= 0
+                or not is_valid_signal
+                or odds is None or odds <= MIN_ACTIONABLE_ODDS
+                or calibration_status != "ready"
+                or readiness != "ready"
+                or anomaly_flag
+                or fam_priority != "core"
+            )
+            publish_allowed = publish_allowed_base
 
             opportunity = {
                 "fixture_id": fixture_id,
@@ -282,7 +300,7 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 "completeness_reason": None if market_complete else "missing_pricing_or_probability",
                 "flags": {
                     "ev_plus": bool(ev is not None and ev > 0),
-                    "value": bool(item.get("value") or (edge is not None and edge > 0)),
+                    "value": bool(item.get("value") or (edge_price is not None and edge_price > 0)),
                     "strong_signal": str(item.get("signal_tier") or "").startswith("strong"),
                     "secondary_market": family in SECONDARY_FAMILIES,
                 },
@@ -294,26 +312,29 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 "reliability": num_or_none(item.get("reliability"), 4),
                 "stability": num_or_none(item.get("stability"), 4),
                 "family_priority": fam_priority,
+                "is_valid_signal": is_valid_signal,
+                "signal_degenerate": not is_valid_signal,
             }
             opportunity["market_level"] = classify_market_level(model_prob, implied_prob, ev, odds)
-            opportunity["visible_en_panel"] = bool(odds is not None)
-            opportunity["recomendado"] = recommended
+            opportunity["visible_en_panel"] = publish_allowed
+            opportunity["recomendado"] = publish_allowed
             opportunity["arbitrage"] = bool(item.get("arbitrage") is True)
             opportunity["readiness"] = readiness
             opportunity["anomaly_flag"] = anomaly_flag
-            opportunity["publish_allowed"] = recommended
-            opportunity["visibility_allowed"] = bool(opportunity["visible_en_panel"] and fam_priority in {"core", "secondary"})
+            opportunity["publish_allowed"] = publish_allowed
+            opportunity["publish_allowed_base"] = publish_allowed_base
+            opportunity["visibility_allowed"] = not hide
             opportunity["is_strong_pick"] = bool(calibrated_prob is not None and calibrated_prob >= 0.60)
             opportunity["is_positive_bet"] = bool(ev is not None and ev > 0)
-            opportunity["is_recommended_pick"] = recommended
+            opportunity["is_recommended_pick"] = publish_allowed
             opportunity["probability_tier"] = (
                 "elite" if calibrated_prob is not None and calibrated_prob >= 0.75
                 else "high" if calibrated_prob is not None and calibrated_prob >= 0.60
                 else "medium" if calibrated_prob is not None and calibrated_prob >= 0.50
                 else "low"
             )
-            opportunity["hidden_reason"] = None if opportunity["visibility_allowed"] else "experimental_hidden_by_default"
-            opportunity["blocking_reason"] = None if recommended else ("anomaly_flag" if anomaly_flag else "not_recommended")
+            opportunity["hidden_reason"] = None if opportunity["visibility_allowed"] else "hidden_by_math_gating"
+            opportunity["blocking_reason"] = None if (publish_allowed and opportunity["visibility_allowed"]) else "math_gating_blocked"
             opportunity["label"] = (
                 "Arbitraje detectado"
                 if opportunity["arbitrage"]
@@ -327,10 +348,10 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
             market_telemetry[fixture_key][opportunity["code"]] = opportunity
             all_opportunities.append(opportunity)
 
-            is_publishable = bool(opportunity["visibility_allowed"])
+            is_publishable = bool(opportunity["visibility_allowed"] and opportunity["publish_allowed"])
             opportunity["publishable"] = is_publishable
 
-            if recommended and is_publishable:
+            if publish_allowed and is_publishable:
                 opportunities_ev.append(opportunity)
                 included.append(opportunity)
             else:
