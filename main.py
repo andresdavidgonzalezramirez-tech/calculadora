@@ -81,6 +81,9 @@ app.add_middleware(
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    frontend_base_path = get_frontend_base_path()
+    if frontend_base_path:
+        app.mount(f"{frontend_base_path}/static", StaticFiles(directory=str(STATIC_DIR)), name="static-prefixed")
 
 
 MARKET_FAMILY_RULES = [
@@ -1233,8 +1236,12 @@ def _validation_error_response(exc: ValidationError, message: str) -> JSONRespon
 @app.get("/")
 def root():
     if STATIC_DIR.joinpath("index.html").exists():
+        frontend_base_path = get_frontend_base_path()
+        static_prefix = f"{frontend_base_path}/static" if frontend_base_path else "/static"
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-        html = html.replace("__FRONTEND_BASE_PATH__", get_frontend_base_path())
+        html = html.replace("__FRONTEND_BASE_PATH__", frontend_base_path)
+        html = html.replace("__STATIC_STYLES_URL__", f"{static_prefix}/styles.css")
+        html = html.replace("__STATIC_APP_URL__", f"{static_prefix}/app.js")
         return HTMLResponse(content=html)
     return {
         "status": "ok",
@@ -1527,6 +1534,15 @@ def panel_dashboard(
     limit: int = Query(300, ge=1, le=3000),
     db: Session = Depends(get_db),
 ):
+    logger.info(
+        "Dashboard request path=%s query=%s run_id=%s workflow=%s limit=%s frontend_base_path=%s",
+        request.url.path,
+        str(request.url.query),
+        run_id,
+        workflow_name,
+        limit,
+        get_frontend_base_path(),
+    )
     reference_now_utc = now_utc()
     selected_run_id = resolve_dashboard_run_id(db, run_id, workflow_name)
     stmt = select(

@@ -4,9 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="frontend-base-path" content="__FRONTEND_BASE_PATH__" />
-    <script>window.__APP_CONFIG__ = { frontendBasePath: "__FRONTEND_BASE_PATH__" };</script>
+    <script>
+      window.__APP_CONFIG__ = {
+        frontendBasePath: "__FRONTEND_BASE_PATH__",
+        staticStylesUrl: "__STATIC_STYLES_URL__",
+        staticAppUrl: "__STATIC_APP_URL__",
+      };
+    </script>
     <title>BANKENBANK · Operations Console</title>
-    <link rel="stylesheet" href="./static/styles.css" />
+    <link rel="stylesheet" href="__STATIC_STYLES_URL__" />
   </head>
   <body>
     <main class="app-shell">
@@ -30,6 +36,9 @@
           </div>
           <div class="refresh-meta">
             <span id="debug-run">run_id=N/D · fixtures_total=0 · processed=0 · skipped=0 · dashboard_read=0</span>
+          </div>
+          <div class="refresh-meta">
+            <span id="dashboard-error" class="badge status-badge error" hidden>Error cargando dashboard</span>
           </div>
         </div>
       </header>
@@ -96,6 +105,6 @@
       </article>
     </template>
 
-    <script src="./static/app.js"></script>
+    <script src="__STATIC_APP_URL__"></script>
   </body>
 </html>
