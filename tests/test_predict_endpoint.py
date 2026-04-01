@@ -175,6 +175,7 @@ def _seed_prediction_with_status(
 
 
 def test_panel_dashboard_only_ns_future_and_multiple_markets(monkeypatch):
+    main.app.dependency_overrides.clear()
     fixed_now = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(main, "now_utc", lambda: fixed_now)
 
@@ -382,6 +383,33 @@ def test_extract_odds_reads_market_catalog_for_advanced_markets():
     assert odds["cards_away_over_1_5"] == 1.72
 
 
+def test_calcular_partido_supports_dynamic_under_markets():
+    fixture = base_fixture()
+    fixture.update(
+        {
+            "gf_home": 1.4,
+            "ga_home": 1.1,
+            "gf_away": 1.2,
+            "ga_away": 1.3,
+            "cf_home": 5.6,
+            "ca_home": 4.7,
+            "cf_away": 5.1,
+            "ca_away": 5.0,
+            "odds": {
+                "totals": {
+                    "corners": {"under_9_5": 1.92},
+                }
+            },
+        }
+    )
+
+    result = predictor.calcular_partido(fixture)
+    indexed = {item["code"]: item for item in result["market_breakdown"]}
+    assert "CORNERS_TOTAL_UNDER_9_5_FT" in indexed
+    assert indexed["CORNERS_TOTAL_UNDER_9_5_FT"]["prob"] is not None
+    assert indexed["CORNERS_TOTAL_UNDER_9_5_FT"]["ev"] is not None
+
+
 def test_calcular_partido_exposes_corners_cards_families_when_input_contains_markets():
     fixture = base_fixture()
     fixture.update(
@@ -403,3 +431,8 @@ def test_calcular_partido_exposes_corners_cards_families_when_input_contains_mar
     assert result["cards_odds_available"] is True
     assert result["families"]["corners"]
     assert result["families"]["cards"]
+
+
+def test_dashboard_family_classifier_supports_corner_and_card_synonyms():
+    assert main.infer_market_family("BOOKING_POINTS", "Total amarillas") == "Cards"
+    assert main.infer_market_family("SAQUES_ESQUINA", "Esquinas totales") == "Corners"

@@ -731,15 +731,16 @@ def _extract_market_catalog_odds(raw_catalog: Any) -> Dict[str, Any]:
     return mapped
 
 
-def _line_from_key(raw_key: str) -> Optional[float]:
-    match = re.search(r"over[_-]?(\d+(?:[_\.]\d+)?)", raw_key)
+def _line_and_direction_from_key(raw_key: str) -> Tuple[Optional[float], Optional[str]]:
+    key = str(raw_key or "").lower().replace("-", "_")
+    match = re.search(r"(over|under)[_\s]?(\d+(?:[_\.]\d+)?)", key)
     if not match:
-        return None
-    cleaned = match.group(1).replace("_", ".")
+        return None, None
+    cleaned = match.group(2).replace("_", ".")
     try:
-        return float(cleaned)
+        return float(cleaned), match.group(1)
     except ValueError:
-        return None
+        return None, None
 
 
 def _period_from_key(raw_key: str) -> str:
@@ -767,9 +768,9 @@ def _extract_dynamic_over_markets(flat: Dict[str, Any]) -> List[Dict[str, Any]]:
         if odd <= 1.0:
             continue
         key = str(raw_key or "").lower()
-        if "over" not in key:
+        if "over" not in key and "under" not in key:
             continue
-        line = _line_from_key(key)
+        line, direction = _line_and_direction_from_key(key)
         if line is None or line < 0.5:
             continue
 
@@ -792,6 +793,7 @@ def _extract_dynamic_over_markets(flat: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "family": family,
                 "scope": scope,
                 "line": line,
+                "direction": direction or "over",
                 "odd": odd,
                 "period": _period_from_key(key),
                 "source_key": key,
@@ -1681,6 +1683,7 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         family = str(dyn.get("family") or "")
         scope = str(dyn.get("scope") or "total")
         period = str(dyn.get("period") or "FT")
+        direction = str(dyn.get("direction") or "over").lower()
         line = _safe_float(dyn.get("line"), 0.0)
         odd = _safe_float(dyn.get("odd"), 0.0)
         if line < 0.5 or odd <= 1.0:
@@ -1766,14 +1769,17 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
 
         period_factor = 0.46 if period == "1H" else 0.54 if period == "2H" else 1.0
         event_lambda = _clamp(base_lambda * period_factor, 0.05, 55.0)
-        prob = _round_prob(prob_over_lambda(event_lambda, line))
+        prob_over = _round_prob(prob_over_lambda(event_lambda, line))
+        prob = prob_over if direction == "over" else _round_prob(1.0 - prob_over)
         family_token = family.upper()
-        code = f"{family_token}_{scope.upper()}_OVER_{str(line).replace('.', '_')}_{period}"
+        dir_token = "OVER" if direction == "over" else "UNDER"
+        code = f"{family_token}_{scope.upper()}_{dir_token}_{str(line).replace('.', '_')}_{period}"
         period_label = "1T" if period == "1H" else "2T" if period == "2H" else "Partido"
+        dir_label = "más de" if direction == "over" else "menos de"
         if scope == "total":
-            pick = f"{group} total más de {line:.1f} ({period_label})"
+            pick = f"{group} total {dir_label} {line:.1f} ({period_label})"
         else:
-            pick = f"{team_label} más de {line:.1f} {group.lower()} ({period_label})"
+            pick = f"{team_label} {dir_label} {line:.1f} {group.lower()} ({period_label})"
 
         markets.append(
             _build_market(
@@ -1800,12 +1806,22 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
     for item in markets:
         token = f"{item.get('code') or ''} {item.get('mercado') or ''} {item.get('jugada') or ''}".upper()
         family_key = "secondary"
-        if "CORNER" in token:
+        if "CORNER" in token or "ESQUINA" in token:
             family_key = "corners"
-        elif "CARD" in token or "TARJET" in token:
+        elif any(k in token for k in ["CARD", "TARJET", "BOOKING", "YELLOW", "AMARILLA", "AMONEST"]):
             family_key = "cards"
+        elif any(k in token for k in ["FOUL", "FALTA"]):
+            family_key = "fouls"
+        elif any(k in token for k in ["OFFSIDE", "FUERA DE JUEGO"]):
+            family_key = "offsides"
+        elif any(k in token for k in ["SHOTS ON TARGET", "SOT", "TIROS A PUERTA", "REMATES AL ARCO"]):
+            family_key = "shots_on_target"
         elif "SHOT" in token or "TIRO" in token:
             family_key = "shots"
+        elif any(k in token for k in ["DOUBLE CHANCE", "DOBLE OPORTUNIDAD", "DC_"]):
+            family_key = "double_chance"
+        elif any(k in token for k in ["EXACT SCORE", "MARCADOR EXACTO"]):
+            family_key = "exact_score"
         elif "BTTS" in token or "AMBOS" in token:
             family_key = "btts"
         elif "1X2" in token:
