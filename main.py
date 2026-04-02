@@ -12,7 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.orm import Session
 
@@ -231,9 +231,45 @@ def family_priority(family: str) -> str:
     return "experimental"
 
 
-def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any]:
-    rows_sorted = sorted(rows, key=lambda item: item.hora or datetime.max.replace(tzinfo=timezone.utc))
-    partidos = [serialize_prediction(row) for row in rows_sorted[:limit]]
+def _merge_prediction_with_fixture(prediction: Prediction, fixture: Optional[Fixture]) -> Dict[str, Any]:
+    fixture_dt = fixture.fixture_datetime if fixture else None
+    hora = prediction.hora or fixture_dt
+    fixture_status = (
+        normalize_fixture_status(prediction.estado)
+        or normalize_fixture_status(fixture.status_short if fixture else None)
+        or "NS"
+    )
+    local = none_if_missing(prediction.local) or none_if_missing(fixture.home_team_name if fixture else None)
+    visitante = none_if_missing(prediction.visitante) or none_if_missing(fixture.away_team_name if fixture else None)
+    liga = none_if_missing(prediction.liga) or none_if_missing(fixture.league_name if fixture else None)
+    pais = none_if_missing(prediction.pais) or none_if_missing(fixture.country if fixture else None)
+
+    return {
+        "hora": hora,
+        "fixture_status": fixture_status,
+        "local": local,
+        "visitante": visitante,
+        "liga": liga,
+        "pais": pais,
+        "league_id": int_or_none(prediction.liga_id) or int_or_none(fixture.league_id if fixture else None),
+        "season": int_or_none(fixture.season if fixture else None),
+        "home_team_id": int_or_none(fixture.home_team_id if fixture else None),
+        "away_team_id": int_or_none(fixture.away_team_id if fixture else None),
+        "home_team_name": local,
+        "away_team_name": visitante,
+    }
+
+
+def build_dashboard_payload(rows: List[Prediction], limit: int, fixture_map: Optional[Dict[int, Fixture]] = None) -> Dict[str, Any]:
+    fixture_map = fixture_map or {}
+    rows_sorted = sorted(
+        rows,
+        key=lambda item: (_merge_prediction_with_fixture(item, fixture_map.get(int(item.fixture_id)))["hora"] or datetime.max.replace(tzinfo=timezone.utc)),
+    )
+    partidos = [
+        serialize_prediction(row, fixture=fixture_map.get(int(row.fixture_id)))
+        for row in rows_sorted[:limit]
+    ]
 
     market_telemetry: Dict[str, Dict[str, Dict[str, Any]]] = {}
     all_opportunities: List[Dict[str, Any]] = []
@@ -244,7 +280,9 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
     for row in rows_sorted:
         fixture_id = int(row.fixture_id)
         fixture_key = str(fixture_id)
-        fixture_status_current = normalize_fixture_status(row.estado)
+        fixture = fixture_map.get(fixture_id)
+        merged = _merge_prediction_with_fixture(row, fixture)
+        fixture_status_current = merged["fixture_status"]
         market_telemetry[fixture_key] = {}
 
         breakdown = row.market_breakdown if isinstance(row.market_breakdown, list) else []
@@ -293,7 +331,7 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 and calibrated_prob is not None and calibrated_prob >= MIN_MODEL_PROBABILITY
                 and readiness == "ready"
                 and calibration_status == "ready"
-                and family in {"1X2", "BTTS", "Double chance", "Goals", "Corners"}
+                and family in {"1X2", "BTTS", "Double chance", "Goals", "Corners", "Cards"}
             )
             hide = bool(
                 ev is None or ev <= 0
@@ -303,16 +341,15 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                 or calibration_status != "ready"
                 or readiness != "ready"
                 or anomaly_flag
-                or fam_priority != "core"
             )
             publish_allowed = publish_allowed_base
 
             opportunity = {
                 "fixture_id": fixture_id,
-                "partido": f"{row.local or 'Local'} vs {row.visitante or 'Visitante'}",
-                "pais": row.pais or "",
-                "liga": row.liga or "",
-                "hora": row.hora.isoformat() if row.hora else None,
+                "partido": f"{merged['local'] or 'Local'} vs {merged['visitante'] or 'Visitante'}",
+                "pais": merged["pais"] or "",
+                "liga": merged["liga"] or "",
+                "hora": merged["hora"].isoformat() if merged["hora"] else None,
                 "fixture_status_current": fixture_status_current,
                 "code": item.get("code") or f"MARKET_{index + 1}",
                 "market": item.get("mercado") or item.get("code") or "N/D",
@@ -401,8 +438,8 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
                     opportunity["reason_discard"] = "market_incomplete"
                 excluded.append(opportunity)
 
-        country = row.pais or "N/D"
-        league = row.liga or "N/D"
+        country = merged["pais"] or "N/D"
+        league = merged["liga"] or "N/D"
         info = country_map.setdefault(country, {"pais": country, "partidos": 0, "ev_plus": 0, "value_bets": 0, "_ligas": {}})
         info["partidos"] += 1
         info["ev_plus"] += sum(1 for item in included if item["flags"]["ev_plus"])
@@ -414,11 +451,11 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
 
         match_radar.append({
             "fixture_id": fixture_id,
-            "liga": row.liga or "",
-            "pais": row.pais or "",
-            "hora": row.hora.isoformat() if row.hora else None,
+            "liga": merged["liga"] or "",
+            "pais": merged["pais"] or "",
+            "hora": merged["hora"].isoformat() if merged["hora"] else None,
             "fixture_status_current": fixture_status_current,
-            "equipos": {"local": row.local or "", "visitante": row.visitante or ""},
+            "equipos": {"local": merged["local"] or "", "visitante": merged["visitante"] or ""},
             "familias_detectadas": sorted(detected_families),
             "oportunidades_incluidas": included,
             "oportunidades_excluidas": excluded,
@@ -460,7 +497,15 @@ def build_dashboard_payload(rows: List[Prediction], limit: int) -> Dict[str, Any
 
     summary = {
         "total_paises": len(paises),
-        "total_ligas": len({(row.liga_id, row.liga) for row in rows_sorted}),
+        "total_ligas": len(
+            {
+                (
+                    _merge_prediction_with_fixture(row, fixture_map.get(int(row.fixture_id)))["league_id"],
+                    _merge_prediction_with_fixture(row, fixture_map.get(int(row.fixture_id)))["liga"],
+                )
+                for row in rows_sorted
+            }
+        ),
         "total_partidos_proximos": len(rows_sorted),
         "total_mercados_analizados": len(all_opportunities),
         "total_senales": sum(len(row.apuestas_fuertes or []) for row in rows_sorted),
@@ -616,6 +661,99 @@ class FixtureInput(BaseModel):
     transport_allowed: Optional[bool] = None
     collection_meta: Dict[str, Any] = Field(default_factory=dict)
     candidate_picks: List[Dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_aliases(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+
+        def _pick(*keys: str) -> Any:
+            for key in keys:
+                if key in data and data.get(key) not in (None, ""):
+                    return data.get(key)
+            return None
+
+        def _set_if_empty(target: str, *sources: str) -> None:
+            if data.get(target) not in (None, "", 0):
+                return
+            picked = _pick(*sources)
+            if picked is not None:
+                data[target] = picked
+
+        teams = data.get("teams") if isinstance(data.get("teams"), dict) else {}
+        home_team_obj = teams.get("home") if isinstance(teams.get("home"), dict) else {}
+        away_team_obj = teams.get("away") if isinstance(teams.get("away"), dict) else {}
+        league = data.get("league") if isinstance(data.get("league"), dict) else {}
+        fixture = data.get("fixture") if isinstance(data.get("fixture"), dict) else {}
+        status = fixture.get("status") if isinstance(fixture.get("status"), dict) else {}
+
+        _set_if_empty("home_team_name", "home_team", "home_name")
+        _set_if_empty("away_team_name", "away_team", "away_name")
+        _set_if_empty("home_team_id", "home_id")
+        _set_if_empty("away_team_id", "away_id")
+        _set_if_empty("league_name", "competition_name")
+        _set_if_empty("country", "league_country", "country_name")
+        _set_if_empty("fixture_datetime", "fixture_date", "kickoff_at", "match_time", "start_time")
+        _set_if_empty("status_short", "fixture_status")
+
+        if data.get("home_team_name") in (None, ""):
+            team_name = home_team_obj.get("name")
+            if team_name:
+                data["home_team_name"] = team_name
+        if data.get("away_team_name") in (None, ""):
+            team_name = away_team_obj.get("name")
+            if team_name:
+                data["away_team_name"] = team_name
+        if data.get("home_team_id") in (None, "", 0):
+            team_id = home_team_obj.get("id")
+            if team_id is not None:
+                data["home_team_id"] = team_id
+        if data.get("away_team_id") in (None, "", 0):
+            team_id = away_team_obj.get("id")
+            if team_id is not None:
+                data["away_team_id"] = team_id
+
+        if data.get("league_name") in (None, ""):
+            league_name = league.get("name")
+            if league_name:
+                data["league_name"] = league_name
+        if data.get("league_id") in (None, "", 0):
+            league_id = league.get("id")
+            if league_id is not None:
+                data["league_id"] = league_id
+        if data.get("country") in (None, ""):
+            country = league.get("country")
+            if country:
+                data["country"] = country
+        if data.get("season") in (None, "", 0):
+            season = league.get("season")
+            if season is not None:
+                data["season"] = season
+
+        if data.get("fixture_id") in (None, "", 0):
+            fixture_id = fixture.get("id")
+            if fixture_id is not None:
+                data["fixture_id"] = fixture_id
+        if data.get("fixture_datetime") in (None, ""):
+            fixture_date = fixture.get("date")
+            if fixture_date:
+                data["fixture_datetime"] = fixture_date
+        if data.get("status_short") in (None, ""):
+            short = status.get("short")
+            if short:
+                data["status_short"] = short
+
+        timestamp = _pick("fixture_timestamp", "timestamp")
+        if data.get("fixture_datetime") in (None, "") and timestamp is not None:
+            try:
+                ts_int = int(float(timestamp))
+                data["fixture_datetime"] = datetime.fromtimestamp(ts_int, tz=timezone.utc).isoformat()
+            except (TypeError, ValueError, OSError):
+                pass
+
+        return data
 
 class IngestRunRequest(BaseModel):
     fixtures: List[FixtureInput] = Field(default_factory=list)
@@ -866,22 +1004,40 @@ def store_pricing_alert(db: Session, result: Dict[str, Any], run_id: int) -> Non
     )
 
 
-def serialize_prediction(p: Prediction, fixture_status_current: Optional[str] = None) -> Dict[str, Any]:
-    status_current = normalize_fixture_status(fixture_status_current) or normalize_fixture_status(p.estado)
+def serialize_prediction(
+    p: Prediction,
+    fixture_status_current: Optional[str] = None,
+    fixture: Optional[Fixture] = None,
+) -> Dict[str, Any]:
+    merged = _merge_prediction_with_fixture(p, fixture)
+    status_current = normalize_fixture_status(fixture_status_current) or merged["fixture_status"]
+    hora_value = merged["hora"]
 
     payload = {
         "id": int(p.fixture_id),
         "fixture_id": int(p.fixture_id),
-        "liga_id": int_or_none(p.liga_id),
-        "ligaId": int_or_none(p.liga_id),
-        "liga": none_if_missing(p.liga),
-        "pais": none_if_missing(p.pais),
-        "hora": p.hora.isoformat() if p.hora else None,
-        "estado": none_if_missing(p.estado),
+        "liga_id": merged["league_id"],
+        "ligaId": merged["league_id"],
+        "liga": merged["liga"],
+        "league_name": merged["liga"],
+        "pais": merged["pais"],
+        "league_country": merged["pais"],
+        "hora": hora_value.isoformat() if hora_value else None,
+        "fixture_date": hora_value.isoformat() if hora_value else None,
+        "fixture_timestamp": int(hora_value.timestamp()) if hora_value else None,
+        "estado": status_current,
+        "fixture_status": status_current,
         "fixture_status_current": status_current,
         "fixtureStatusCurrent": status_current,
-        "local": none_if_missing(p.local),
-        "visitante": none_if_missing(p.visitante),
+        "local": merged["local"],
+        "visitante": merged["visitante"],
+        "home_team": merged["home_team_name"],
+        "away_team": merged["away_team_name"],
+        "home_team_name": merged["home_team_name"],
+        "away_team_name": merged["away_team_name"],
+        "home_team_id": merged["home_team_id"],
+        "away_team_id": merged["away_team_id"],
+        "season": merged["season"],
         "predicted_winner": none_if_missing(p.predicted_winner),
         "predictedWinner": none_if_missing(p.predicted_winner),
 
@@ -1534,10 +1690,19 @@ def get_predictions(
     stmt = stmt.order_by(asc(Prediction.hora), asc(Prediction.liga)).limit(limit)
     rows = db.execute(stmt).all()
     predictions: List[Dict[str, Any]] = []
+    fixture_ids = [int(prediction.fixture_id) for prediction, _, _ in rows]
+    fixtures = (
+        db.execute(select(Fixture).where(Fixture.fixture_id.in_(fixture_ids))).scalars().all()
+        if fixture_ids
+        else []
+    )
+    fixture_map = {int(item.fixture_id): item for item in fixtures}
+
     for prediction, fixture_status, fixture_dt in rows:
         if not is_fixture_visible(fixture_status, fixture_dt, reference_now_utc):
             continue
-        predictions.append(serialize_prediction(prediction, fixture_status))
+        fixture = fixture_map.get(int(prediction.fixture_id))
+        predictions.append(serialize_prediction(prediction, fixture_status, fixture))
         if len(predictions) >= limit:
             break
     return {"predictions": predictions}
@@ -1641,6 +1806,13 @@ def panel_dashboard(
     rows = db.execute(stmt).all()
     visible_rows: List[Prediction] = []
     hidden_rows: List[Prediction] = []
+    fixture_ids = [int(prediction.fixture_id) for prediction, _, _ in rows]
+    fixtures = (
+        db.execute(select(Fixture).where(Fixture.fixture_id.in_(fixture_ids))).scalars().all()
+        if fixture_ids
+        else []
+    )
+    fixture_map: Dict[int, Fixture] = {int(item.fixture_id): item for item in fixtures}
     for prediction, fixture_status, fixture_dt in rows:
         prediction.estado = normalize_fixture_status(fixture_status) or prediction.estado
         if is_fixture_visible(fixture_status, fixture_dt, reference_now_utc):
@@ -1649,7 +1821,7 @@ def panel_dashboard(
             hidden_rows.append(prediction)
 
     payload_rows = visible_rows
-    payload = build_dashboard_payload(payload_rows[:limit], limit=limit)
+    payload = build_dashboard_payload(payload_rows[:limit], limit=limit, fixture_map=fixture_map)
     payload["selected_run_id"] = int(selected_run_id) if selected_run_id is not None else None
     payload["workflow_name"] = workflow_name
     payload["debug"] = {

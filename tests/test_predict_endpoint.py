@@ -417,7 +417,7 @@ def test_panel_dashboard_only_ns_future_and_multiple_markets(monkeypatch):
     visible_codes = {(opp["fixture_id"], opp["code"]) for opp in payload["top_opportunities"]}
     assert (2001, "O85_CORNERS") in visible_codes
     assert (2001, "OVER25") in visible_codes
-    assert (2001, "O35_CARDS") not in visible_codes
+    assert (2001, "O35_CARDS") in visible_codes
     assert (2001, "SHOTS_HOME") not in visible_codes
     assert (2001, "SOT_AWAY") not in visible_codes
 
@@ -733,6 +733,89 @@ def test_recommended_requires_ready_and_calibrated_on_dashboard():
     assert indexed["OVER25"]["is_recommended_pick"] is True
     assert indexed["EXACT_SCORE_1_0"]["is_recommended_pick"] is False
     assert indexed["EXACT_SCORE_1_0"]["calibration_status"] == "missing"
+
+
+def test_predict_normalizes_fixture_aliases(monkeypatch):
+    client, captured = _client_with_ingest_stub(monkeypatch)
+    fixture = {
+        "fixture_id": 1492198,
+        "league_id": 71,
+        "league_name": "Serie A",
+        "league_country": "Brazil",
+        "fixture_date": "2026-04-03T00:30:00+00:00",
+        "status_short": "NS",
+        "home_team": "Palmeiras",
+        "away_team": "Gremio",
+        "home_id": 121,
+        "away_id": 123,
+    }
+
+    response = client.post("/predict", json={"fixtures": [fixture]})
+
+    assert response.status_code == 200
+    normalized = captured["payload"].fixtures[0]
+    assert normalized.country == "Brazil"
+    assert normalized.fixture_datetime == "2026-04-03T00:30:00+00:00"
+    assert normalized.home_team_name == "Palmeiras"
+    assert normalized.away_team_name == "Gremio"
+    assert normalized.home_team_id == 121
+    assert normalized.away_team_id == 123
+
+
+def test_panel_dashboard_fills_descriptors_from_fixtures_table():
+    main.app.dependency_overrides.clear()
+    fixture_id = 220001
+    kickoff = datetime.now(timezone.utc) + timedelta(hours=2)
+
+    with db.SessionLocal() as session:
+        session.query(main.Prediction).filter(main.Prediction.fixture_id == fixture_id).delete()
+        session.query(main.Fixture).filter(main.Fixture.fixture_id == fixture_id).delete()
+        session.add(
+            main.Fixture(
+                fixture_id=fixture_id,
+                league_id=71,
+                league_name="Serie A",
+                country="Brazil",
+                season=2026,
+                fixture_datetime=kickoff,
+                status_short="NS",
+                home_team_id=121,
+                away_team_id=123,
+                home_team_name="Palmeiras",
+                away_team_name="Gremio",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        session.add(
+            main.Prediction(
+                fixture_id=fixture_id,
+                liga_id=71,
+                liga="",
+                pais="",
+                hora=None,
+                estado="NS",
+                local="",
+                visitante="",
+                source_run_id=99999,
+                market_breakdown=[],
+                apuestas_fuertes=[],
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+
+    client = TestClient(main.app)
+    response = client.get("/panel/dashboard", params={"run_id": 99999, "limit": 20})
+    assert response.status_code == 200
+    payload = response.json()
+    partido = next(item for item in payload["partidos"] if item["fixture_id"] == fixture_id)
+    assert partido["home_team_name"] == "Palmeiras"
+    assert partido["away_team_name"] == "Gremio"
+    assert partido["league_name"] == "Serie A"
+    assert partido["league_country"] == "Brazil"
+    assert partido["hora"] is not None
 
 
 def test_static_files():
