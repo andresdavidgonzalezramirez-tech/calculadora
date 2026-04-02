@@ -660,6 +660,87 @@ def test_calcular_partido_keeps_detected_markets_without_advanced_stats():
     assert result["families"]["shots_on_target"]
 
 
+def test_forensic_workflow_markets_are_processed_but_dashboard_renders_subset():
+    fixture = base_fixture()
+    fixture.update(
+        {
+            "odds": {
+                "match_winner_home": 2.05,
+                "match_winner_draw": 3.30,
+                "match_winner_away": 3.70,
+                "goals_over_2_5": 1.92,
+                "goals_under_2_5": 1.94,
+                "both_teams_to_score_yes": 1.88,
+                "double_chance_1x": 1.34,
+                "double_chance_12": 1.36,
+                "double_chance_x2": 1.72,
+            },
+            "families": {
+                "match_winner": [
+                    {"code": "1X2_HOME", "market": "match_winner", "pick": "1", "odds": 2.05},
+                    {"code": "1X2_DRAW", "market": "match_winner", "pick": "X", "odds": 3.30},
+                    {"code": "1X2_AWAY", "market": "match_winner", "pick": "2", "odds": 3.70},
+                ],
+                "totals_over_under_2_5": [
+                    {"code": "OVER_2_5", "market": "totals_over_under_2_5", "pick": "OVER_2_5", "odds": 1.92},
+                    {"code": "UNDER_2_5", "market": "totals_over_under_2_5", "pick": "UNDER_2_5", "odds": 1.94},
+                ],
+                "both_teams_to_score": [
+                    {"code": "BTTS_YES", "market": "both_teams_to_score", "pick": "BTTS_YES", "odds": 1.88},
+                    {"code": "BTTS_NO", "market": "both_teams_to_score", "pick": "BTTS_NO", "odds": 1.92},
+                ],
+                "double_chance": [
+                    {"code": "DC_1X", "market": "double_chance", "pick": "1X", "odds": 1.34},
+                    {"code": "DC_12", "market": "double_chance", "pick": "12", "odds": 1.36},
+                    {"code": "DC_X2", "market": "double_chance", "pick": "X2", "odds": 1.72},
+                ],
+            },
+        }
+    )
+
+    result = predictor.calcular_partido(fixture)
+    breakdown = {item["code"]: item for item in result["market_breakdown"]}
+
+    required_codes = {
+        "1X2_HOME",
+        "1X2_DRAW",
+        "1X2_AWAY",
+        "DC_1X",
+        "DC_12",
+        "DC_X2",
+        "BTTS_YES",
+        "BTTS_NO",
+        "OVER_2_5",
+        "UNDER_2_5",
+    }
+    assert required_codes.issubset(set(breakdown))
+    assert breakdown["UNDER_2_5"]["detected_only"] is True
+    assert breakdown["UNDER_2_5"]["market_complete"] is False
+    assert breakdown["BTTS_NO"]["detected_only"] is True
+    assert breakdown["BTTS_NO"]["market_complete"] is False
+
+    row = main.Prediction(
+        fixture_id=fixture["fixture_id"],
+        liga_id=fixture["league_id"],
+        liga=fixture["league_name"],
+        pais=fixture["country"],
+        hora=datetime(2026, 4, 2, 20, 0, tzinfo=timezone.utc),
+        estado="NS",
+        local=fixture["home_team_name"],
+        visitante=fixture["away_team_name"],
+        market_breakdown=result["market_breakdown"],
+        apuestas_fuertes=[],
+    )
+    payload = main.build_dashboard_payload([row], limit=300)
+    telemetry_codes = set(payload["market_telemetry"][str(fixture["fixture_id"])].keys())
+    top_codes = {item["code"] for item in payload["top_opportunities"]}
+
+    assert required_codes.issubset(telemetry_codes)
+    assert len(telemetry_codes) > len(top_codes)
+    assert "UNDER_2_5" not in top_codes
+    assert "BTTS_NO" not in top_codes
+
+
 def test_dashboard_family_classifier_supports_corner_and_card_synonyms():
     assert main.infer_market_family("BOOKING_POINTS", "Total amarillas") == "Cards"
     assert main.infer_market_family("SAQUES_ESQUINA", "Esquinas totales") == "Corners"

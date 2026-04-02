@@ -329,10 +329,23 @@ function createOpportunityCard(opp) {
   return node;
 }
 
-function renderOpportunityList(containerId, opportunities, emptyText) {
+function renderOpportunityList(containerId, opportunities, emptyText, options = {}) {
+  const cfg = {
+    allowTraceable: false,
+    ...options,
+  };
   const container = q(containerId);
   container.innerHTML = "";
   const safeRows = opportunities.filter((o) => {
+    if (cfg.allowTraceable) {
+      if (state.ui.validOnly) {
+        const allowed = state.ui.includeSecondaryWhenValidOnly
+          ? new Set(["publishable_core", "publishable_secondary", "traceable_only"])
+          : new Set(["publishable_core", "traceable_only"]);
+        return allowed.has(String(o.pick_status || ""));
+      }
+      return true;
+    }
     if (state.ui.validOnly) {
       const allowed = state.ui.includeSecondaryWhenValidOnly
         ? new Set(["publishable_core", "publishable_secondary"])
@@ -731,7 +744,12 @@ function renderFromState() {
 
     const incomplete = getIncompleteFamilyDataset(family);
     if (incomplete.notice && (!state.filters.family || state.filters.family === family)) notices.push(incomplete.notice);
-    renderOpportunityList(incompleteTarget, incomplete.rows, "No hay mercados detectados sin métricas completas para esta familia.");
+    renderOpportunityList(
+      incompleteTarget,
+      incomplete.rows,
+      "No hay mercados detectados sin métricas completas para esta familia.",
+      { allowTraceable: true },
+    );
   });
 
   renderFilterNotices(notices);
