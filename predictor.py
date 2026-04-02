@@ -1634,8 +1634,20 @@ def calcular_alerta_pricing(prediction: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
-    home_name = str(f.get("home_team_name", "Local"))
-    away_name = str(f.get("away_team_name", "Visitante"))
+    home_name = str(
+        f.get("home_team_name")
+        or f.get("home_team")
+        or f.get("home_name")
+        or ((f.get("teams") or {}).get("home") or {}).get("name")
+        or "Local"
+    )
+    away_name = str(
+        f.get("away_team_name")
+        or f.get("away_team")
+        or f.get("away_name")
+        or ((f.get("teams") or {}).get("away") or {}).get("name")
+        or "Visitante"
+    )
 
     home_stats = extract_team_stats(f.get("home_stats"), "home")
     away_stats = extract_team_stats(f.get("away_stats"), "away")
