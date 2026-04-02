@@ -210,6 +210,26 @@ def test_ingest_run_persists_odds_snapshot_from_bookmakers_source(monkeypatch):
         assert snapshot.away == 3.9
         assert snapshot.over25 == 1.87
 
+
+def test_predictor_applies_panel_constraints_to_market_breakdown():
+    fixture = base_fixture()
+    fixture["publish_value_allowed"] = False
+    fixture["odds"] = {
+        "home": 1.9,
+        "draw": 3.4,
+        "away": 4.0,
+        "over25": 1.8,
+        "btts_yes": 1.95,
+    }
+
+    result = predictor.calcular_partido(fixture)
+    blocked_reasons = {
+        item.get("panel_block_reason")
+        for item in (result.get("market_breakdown") or [])
+        if item.get("panel_blocked")
+    }
+    assert "publish_value_blocked_by_panel" in blocked_reasons
+
 def test_predict_classifies_publishable_core(monkeypatch):
     client, _ = _client_with_ingest_stub(monkeypatch)
     fixture = base_fixture()
@@ -234,6 +254,33 @@ def test_predict_classifies_publishable_core(monkeypatch):
     classified = payload["classification"]["fixtures"][0]
     assert len(classified["publishable_core"]) == 1
     assert classified["publishable_core"][0]["pick_status"] == "publishable_core"
+
+
+def test_predict_blocks_classification_when_panel_disables_publish(monkeypatch):
+    client, _ = _client_with_ingest_stub(monkeypatch)
+    fixture = base_fixture()
+    fixture["publish_value_allowed"] = False
+    fixture["candidate_picks"] = [
+        {
+            "market_key": "OVER25",
+            "market": "Goals",
+            "pick": "Over 2.5",
+            "odds": 1.90,
+            "calibrated_prob": 0.62,
+            "market_complete": True,
+            "readiness": "ready",
+            "anomaly_flag": False,
+            "secondary_market": False,
+            "family": "Goals",
+        }
+    ]
+
+    response = client.post("/predict", json={"fixtures": [fixture]})
+    assert response.status_code == 200
+    classified = response.json()["classification"]["fixtures"][0]
+    assert classified["publishable_core"] == []
+    assert classified["traceable_only"][0]["panel_blocked"] is True
+    assert classified["traceable_only"][0]["panel_block_reason"] == "publish_value_blocked_by_panel"
 
 
 def _seed_prediction_with_status(

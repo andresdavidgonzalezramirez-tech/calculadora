@@ -849,6 +849,74 @@ def _infer_family_from_token(token: str) -> str:
     return "secondary"
 
 
+def _panel_controls(fixture: Dict[str, Any], feature_availability: Dict[str, Any]) -> Dict[str, Any]:
+    panel_constraints = fixture.get("panel_constraints") if isinstance(fixture.get("panel_constraints"), dict) else {}
+    return {
+        "transport_allowed": fixture.get("transport_allowed") if isinstance(fixture.get("transport_allowed"), bool) else panel_constraints.get("transport_allowed"),
+        "publish_value_allowed": fixture.get("publish_value_allowed") if isinstance(fixture.get("publish_value_allowed"), bool) else panel_constraints.get("publish_value_allowed"),
+        "goals_ready": fixture.get("goals_ready") if isinstance(fixture.get("goals_ready"), bool) else panel_constraints.get("goals_ready") if isinstance(panel_constraints.get("goals_ready"), bool) else _nested_bool(feature_availability, ["goals", "ready"]),
+        "corners_ready": fixture.get("corners_ready") if isinstance(fixture.get("corners_ready"), bool) else panel_constraints.get("corners_ready") if isinstance(panel_constraints.get("corners_ready"), bool) else _nested_bool(feature_availability, ["corners", "ready"]),
+        "cards_ready": fixture.get("cards_ready") if isinstance(fixture.get("cards_ready"), bool) else panel_constraints.get("cards_ready") if isinstance(panel_constraints.get("cards_ready"), bool) else _nested_bool(feature_availability, ["cards", "ready"]),
+        "shots_total_ready": fixture.get("shots_total_ready") if isinstance(fixture.get("shots_total_ready"), bool) else panel_constraints.get("shots_total_ready") if isinstance(panel_constraints.get("shots_total_ready"), bool) else _nested_bool(feature_availability, ["shots_total", "ready"]),
+        "shots_on_target_ready": fixture.get("shots_on_target_ready") if isinstance(fixture.get("shots_on_target_ready"), bool) else panel_constraints.get("shots_on_target_ready") if isinstance(panel_constraints.get("shots_on_target_ready"), bool) else _nested_bool(feature_availability, ["shots_on_target", "ready"]),
+        "min_odds": _parse_avg_number(panel_constraints.get("min_odds")),
+        "max_odds": _parse_avg_number(panel_constraints.get("max_odds")),
+        "min_edge": _parse_avg_number(panel_constraints.get("min_edge")),
+        "min_ev": _parse_avg_number(panel_constraints.get("min_ev")),
+    }
+
+
+def _panel_block_reason(market: Dict[str, Any], controls: Dict[str, Any], market_blocking_reasons: Dict[str, Any]) -> Optional[str]:
+    family = market.get("family_key") or _infer_family_from_token(f"{market.get('code') or ''} {market.get('mercado') or ''} {market.get('jugada') or ''}")
+
+    if controls.get("transport_allowed") is False:
+        return "transport_blocked_by_panel"
+    if family in {"goals", "1x2", "double_chance", "btts"} and controls.get("publish_value_allowed") is False:
+        return "publish_value_blocked_by_panel"
+    if family in {"goals", "1x2", "double_chance", "btts"} and controls.get("goals_ready") is False:
+        return "goals_not_ready_by_panel"
+    if family == "corners" and controls.get("corners_ready") is False:
+        return "corners_not_ready_by_panel"
+    if family == "cards" and controls.get("cards_ready") is False:
+        return "cards_not_ready_by_panel"
+    if family == "shots" and controls.get("shots_total_ready") is False:
+        return "shots_not_ready_by_panel"
+    if family == "shots_on_target" and controls.get("shots_on_target_ready") is False:
+        return "shots_on_target_not_ready_by_panel"
+
+    min_odds = controls.get("min_odds")
+    max_odds = controls.get("max_odds")
+    odds = market.get("cuota")
+    if min_odds is not None and odds is not None and odds < min_odds:
+        return f"panel_min_odds_{min_odds}"
+    if max_odds is not None and odds is not None and odds > max_odds:
+        return f"panel_max_odds_{max_odds}"
+
+    min_ev = controls.get("min_ev")
+    ev = market.get("ev")
+    if min_ev is not None and ev is not None and ev < min_ev:
+        return f"panel_min_ev_{min_ev}"
+
+    min_edge = controls.get("min_edge")
+    edge = market.get("edge")
+    if min_edge is not None and edge is not None and edge < min_edge:
+        return f"panel_min_edge_{min_edge}"
+
+    family_reason = market_blocking_reasons.get(family)
+    if isinstance(family_reason, str) and family_reason.strip():
+        return f"panel_family_block_{family_reason.strip()}"
+
+    return None
+
+
+def _apply_panel_controls(markets: List[Dict[str, Any]], controls: Dict[str, Any], market_blocking_reasons: Dict[str, Any]) -> List[Dict[str, Any]]:
+    for market in markets:
+        reason = _panel_block_reason(market, controls, market_blocking_reasons)
+        market["panel_blocked"] = bool(reason)
+        market["panel_block_reason"] = reason
+    return markets
+
+
 def _extract_detected_markets(fixture: Dict[str, Any]) -> List[Dict[str, Any]]:
     detected: List[Dict[str, Any]] = []
     families = fixture.get("families")
@@ -1340,6 +1408,8 @@ def _select_primary_bet(markets: List[Dict[str, Any]]) -> Dict[str, Any]:
             "close_probability": None,
             "volatility": 0.50,
             "fragility": 0.50,
+            "probabilidad_implicita": None,
+            "probabilidad_justa": None,
         }
 
     eligible = [
@@ -1624,12 +1694,13 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         feature_availability = f.get("feature_availability") or {}
     market_blocking_reasons = f.get("market_blocking_reasons") if isinstance(f.get("market_blocking_reasons"), dict) else {}
 
-    goals_ready = f.get("goals_ready") if isinstance(f.get("goals_ready"), bool) else _nested_bool(feature_availability, ["goals", "ready"])
-    publish_value_allowed = f.get("publish_value_allowed") if isinstance(f.get("publish_value_allowed"), bool) else _nested_bool(feature_availability, ["goals", "publish_allowed"])
-    corners_ready = f.get("corners_ready") if isinstance(f.get("corners_ready"), bool) else _nested_bool(feature_availability, ["corners", "ready"])
-    cards_ready = f.get("cards_ready") if isinstance(f.get("cards_ready"), bool) else _nested_bool(feature_availability, ["cards", "ready"])
-    shots_total_ready = f.get("shots_total_ready") if isinstance(f.get("shots_total_ready"), bool) else _nested_bool(feature_availability, ["shots_total", "ready"])
-    shots_on_target_ready = f.get("shots_on_target_ready") if isinstance(f.get("shots_on_target_ready"), bool) else _nested_bool(feature_availability, ["shots_on_target", "ready"])
+    controls = _panel_controls(f, feature_availability)
+    goals_ready = controls.get("goals_ready")
+    publish_value_allowed = controls.get("publish_value_allowed")
+    corners_ready = controls.get("corners_ready")
+    cards_ready = controls.get("cards_ready")
+    shots_total_ready = controls.get("shots_total_ready")
+    shots_on_target_ready = controls.get("shots_on_target_ready")
 
     odds_presence = sum(1 for k in ["home", "draw", "away", "over25", "btts_yes"] if odds.get(k) is not None) / 5.0
     goals_presence = sum(1 for v in [f.get("gf_home"), f.get("ga_home"), f.get("gf_away"), f.get("ga_away"), home_stats.get("gf"), home_stats.get("ga"), away_stats.get("gf"), away_stats.get("ga")] if _parse_avg_number(v) is not None)
@@ -2145,8 +2216,11 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
                 }
             ]
 
-    best = _select_primary_bet(markets)
-    apuestas_fuertes = _strong_bets(markets)
+    markets = _apply_panel_controls(markets, controls, market_blocking_reasons)
+    allowed_markets = [item for item in markets if not item.get("panel_blocked")]
+
+    best = _select_primary_bet(allowed_markets)
+    apuestas_fuertes = _strong_bets(allowed_markets)
     signal_count = len(apuestas_fuertes)
     value_count = sum(1 for item in apuestas_fuertes if item.get("signal_tier") in {"strong_value", "medium_value", "low_value"})
     integrity_alerts = sum(1 for item in apuestas_fuertes if item.get("posible_error_cuota") or item.get("cuota_sospechosa"))
@@ -2260,6 +2334,8 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
                 "volatility": round(item.get("volatility", 0.0), 4),
                 "fragility": round(item.get("fragility", 0.0), 4),
                 "detected_only": bool(item.get("detected_only")),
+                "panel_blocked": bool(item.get("panel_blocked")),
+                "panel_block_reason": item.get("panel_block_reason"),
                 "delta_prob": round(item["prob"] - item["probabilidad_justa"], 6) if item.get("prob") is not None and item.get("probabilidad_justa") is not None else None,
                 "stake": _kelly_stake_units(
                     item.get("prob"),
@@ -2281,7 +2357,7 @@ def calcular_partido(f: Dict[str, Any]) -> Dict[str, Any]:
         "stake_sugerido_unidades": _kelly_stake_units(best.get("prob"), best.get("cuota"), best_ev, best_market_complete),
         "market_stability": round(best["stability"], 4),
         "market_reliability": round(best["reliability"], 4),
-        "close_probability": round(best.get("close_probability", best["prob"]), 4),
+        "close_probability": round(best.get("close_probability", best["prob"]), 4) if best.get("close_probability", best.get("prob")) is not None else None,
         "market_volatility": round(best.get("volatility", 0.0), 4),
         "pick_fragility": round(best.get("fragility", 0.0), 4),
         "goals_ready": goals_ready,
