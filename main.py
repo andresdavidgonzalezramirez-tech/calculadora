@@ -602,6 +602,13 @@ class FixtureInput(BaseModel):
     market_odds: Any = Field(default_factory=dict)
     feature_availability: Dict[str, Any] = Field(default_factory=dict)
     market_blocking_reasons: Dict[str, Any] = Field(default_factory=dict)
+    panel_constraints: Dict[str, Any] = Field(default_factory=dict)
+    goals_ready: Optional[bool] = None
+    publish_value_allowed: Optional[bool] = None
+    corners_ready: Optional[bool] = None
+    cards_ready: Optional[bool] = None
+    shots_total_ready: Optional[bool] = None
+    shots_on_target_ready: Optional[bool] = None
     advanced_sample_counts: Dict[str, Any] = Field(default_factory=dict)
     request_meta: Dict[str, Any] = Field(default_factory=dict)
     corners_publish_allowed: Optional[bool] = None
@@ -1159,10 +1166,62 @@ def _classify_pick(candidate: Dict[str, Any], fixture_id: int) -> PredictPickOut
     )
 
 
+def _pick_panel_block_reason(
+    pick: PredictPickOut,
+    fixture: FixtureInput,
+) -> Optional[str]:
+    controls = fixture.panel_constraints if isinstance(fixture.panel_constraints, dict) else {}
+    family = (pick.family or "").lower()
+    if fixture.transport_allowed is False or controls.get("transport_allowed") is False:
+        return "transport_blocked_by_panel"
+    if family in {"goals", "1x2", "double chance", "btts"}:
+        if fixture.publish_value_allowed is False or controls.get("publish_value_allowed") is False:
+            return "publish_value_blocked_by_panel"
+        goals_ready = fixture.goals_ready if fixture.goals_ready is not None else controls.get("goals_ready")
+        if goals_ready is False:
+            return "goals_not_ready_by_panel"
+    if family == "corners" and ((fixture.corners_ready if fixture.corners_ready is not None else controls.get("corners_ready")) is False):
+        return "corners_not_ready_by_panel"
+    if family == "cards" and ((fixture.cards_ready if fixture.cards_ready is not None else controls.get("cards_ready")) is False):
+        return "cards_not_ready_by_panel"
+    if family == "shots" and ((controls.get("shots_total_ready")) is False):
+        return "shots_not_ready_by_panel"
+    if family == "shots on target" and ((controls.get("shots_on_target_ready")) is False):
+        return "shots_on_target_not_ready_by_panel"
+
+    odds = pick.odds
+    ev = pick.ev
+    edge = pick.edge_price
+    min_odds = num_or_none(controls.get("min_odds"), 6)
+    max_odds = num_or_none(controls.get("max_odds"), 6)
+    min_ev = num_or_none(controls.get("min_ev"), 6)
+    min_edge = num_or_none(controls.get("min_edge"), 6)
+    if min_odds is not None and odds is not None and odds < min_odds:
+        return f"panel_min_odds_{min_odds}"
+    if max_odds is not None and odds is not None and odds > max_odds:
+        return f"panel_max_odds_{max_odds}"
+    if min_ev is not None and ev is not None and ev < min_ev:
+        return f"panel_min_ev_{min_ev}"
+    if min_edge is not None and edge is not None and edge < min_edge:
+        return f"panel_min_edge_{min_edge}"
+    return None
+
+
 def _predict_rich_response(payload: IngestRunRequest) -> Dict[str, Any]:
     fixtures_payload: List[Dict[str, Any]] = []
     for fixture in payload.fixtures:
-        picks = [_classify_pick(candidate, fixture.fixture_id).model_dump() for candidate in _extract_candidate_picks(fixture)]
+        picks: List[Dict[str, Any]] = []
+        for candidate in _extract_candidate_picks(fixture):
+            pick = _classify_pick(candidate, fixture.fixture_id)
+            block_reason = _pick_panel_block_reason(pick, fixture)
+            row = pick.model_dump()
+            row["panel_blocked"] = bool(block_reason)
+            row["panel_block_reason"] = block_reason
+            if block_reason:
+                row["pick_status"] = "traceable_only"
+                row["blocking_reason"] = block_reason
+                row["reason_discard"] = "blocked_by_panel"
+            picks.append(row)
         picks_sorted = sorted(picks, key=lambda row: row.get("rank_score") or -999, reverse=True)
         fixtures_payload.append(
             {
